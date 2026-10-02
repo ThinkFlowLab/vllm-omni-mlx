@@ -1,17 +1,12 @@
 """Generation engine (#15 / M1.6): voices × languages × sampling modes produce
-plausible artifact-free audio. Stand-in for human listening: duration scales
-with text, RMS sits in a healthy band (precision bugs surface as silence or
-full-scale noise), voices differ, and greedy is deterministic. Weight-gated.
-
-Human listen-test verdicts (2026-10-02, M4): recorded on issue #15 with this
-PR — English/Chinese × vivian/aiden × greedy/defaults all intelligible, no
-artifacts at either sampling mode."""
+plausible artifact-free audio. Automated stand-in for listening: duration
+scales with text, RMS sits in a healthy band (precision bugs surface as
+silence or full-scale noise), voices differ, and greedy is deterministic.
+Weight-gated; human audition files are referenced on issue #15."""
 
 import unittest
 import wave
 import io
-
-import mlx.core as mx
 
 from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot
 from vllm_omni_mlx.tts.generate import synthesize, wav_bytes
