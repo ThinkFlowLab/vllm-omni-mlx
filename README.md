@@ -59,6 +59,8 @@ base64/URL sources (Anthropic `image` blocks). Either way it reaches the model t
 
 ## Design notes & limits
 
+See [docs/architecture.md](docs/architecture.md) for the architecture diagram and rationale.
+
 - **Single model, serialized generation.** One model instance per process; a lock serializes
   generation. Concurrent requests queue instead of racing the GPU. This is the intended
   lightweight trade-off, not an oversight.
