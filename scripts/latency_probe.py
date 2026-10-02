@@ -39,8 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--system-words", type=int, default=500, help="system-prompt length in words, sizing the prefilled prefix (default: 500)")
     parser.add_argument("--temperature", type=float, default=0.0, help="sampling temperature (default: 0)")
     parser.add_argument("--audio", action="store_true", help="probe POST /v1/audio/speech instead of chat: reports TTFB, total, RTF per turn")
+    parser.add_argument("--stream", action="store_true", help="with --audio: chunked-PCM stream mode — audio_ttfp, inter-chunk gaps, sustained ratio")
+    parser.add_argument("--interval", type=float, default=None, help="streaming_interval seconds for --audio --stream (default: server's 0.5)")
     parser.add_argument("--voice", default="vivian", help="preset voice for --audio mode (default: vivian)")
-    parser.add_argument("--audio-text", default="Welcome to the speech latency probe. This sentence is long enough to make the real time factor meaningful.", help="text synthesized in --audio mode")
+    parser.add_argument("--audio-text", default="Welcome to the speech latency probe. This paragraph is deliberately long so that the real time factor and chunk cadence are meaningful over a sustained generation.", help="text synthesized in --audio mode")
     return parser
 
 
@@ -53,6 +55,8 @@ def probe_audio(args) -> int:
         headers["Authorization"] = f"Bearer {args.api_key}"
 
     print(f"probing {args.url} /v1/audio/speech — voice {args.voice}, {args.turns} turns")
+    if getattr(args, "stream", False):
+        return probe_audio_stream(args, headers)
     print(f"{'turn':>4} {'TTFB ms':>9} {'total s':>8} {'audio s':>8} {'RTF':>6}")
     for turn in range(1, args.turns + 1):
         body = json.dumps({"input": args.audio_text, "voice": args.voice}).encode()
@@ -69,6 +73,67 @@ def probe_audio(args) -> int:
             print(f"{turn:>4}  no audio returned", flush=True)
             continue
         print(f"{turn:>4} {ttfb*1000:9.0f} {total:8.2f} {audio_seconds:8.2f} {total/max(audio_seconds, 1e-9):6.2f}", flush=True)
+    return 0
+
+
+def _merge_tcp_splits(arrivals: list[float], sizes: list[int], split_ms: float = 20.0) -> tuple[list[float], list[int]]:
+    """Collapse TCP-segment reads of one server write into chunk arrivals:
+    reads landing within `split_ms` of the previous one belong to the same
+    chunk; the chunk's arrival time is its first read's."""
+    merged_arrivals: list[float] = []
+    merged_sizes: list[int] = []
+    for t, s in zip(arrivals, sizes):
+        if merged_arrivals and (t - merged_arrivals[-1]) * 1000 <= split_ms:
+            merged_sizes[-1] += s
+        else:
+            merged_arrivals.append(t)
+            merged_sizes.append(s)
+    return merged_arrivals, merged_sizes
+
+
+def probe_audio_stream(args, headers: dict) -> int:
+    """--audio --stream: upstream's percentile set over chunked PCM —
+    audio_ttfp (time to first audio packet), inter-chunk gaps vs the audio
+    each chunk covers (sustained ratio > 1 means a playback underrun), total
+    RTF, and audio duration."""
+    payload = {"input": args.audio_text, "voice": args.voice, "stream": True}
+    if args.interval:
+        payload["streaming_interval"] = args.interval
+    body = json.dumps(payload).encode()
+
+    print(f"stream mode — interval {args.interval or 0.5}s")
+    print(f"{'turn':>4} {'ttfp ms':>8} {'gaps p50':>9} {'gaps p95':>9} {'sust':>6} {'RTF':>6} {'audio s':>8} {'chunks':>7}")
+    for turn in range(1, args.turns + 1):
+        request = urllib.request.Request(f"{args.url}/v1/audio/speech", data=body, headers=headers)
+        start = time.perf_counter()
+        ttfp = None
+        arrivals = []  # arrival time per network chunk (read1: one block per arrival)
+        sizes = []
+        with _OPENER.open(request, timeout=600) as response:
+            read1 = getattr(response, "read1", None)
+            while True:
+                data = read1(1 << 16) if read1 else response.read(1 << 16)
+                if not data:
+                    break
+                if ttfp is None:
+                    ttfp = time.perf_counter() - start
+                arrivals.append(time.perf_counter() - start)
+                sizes.append(len(data))
+        total = time.perf_counter() - start
+        if ttfp is None or not sizes:
+            print(f"{turn:>4}  no audio returned", flush=True)
+            continue
+        gaps_arrivals, gaps_sizes = _merge_tcp_splits(arrivals, sizes)
+        gaps = [b - a for a, b in zip(gaps_arrivals, gaps_arrivals[1:])]
+        chunk_audio = [s / 2 / 24000 for s in gaps_sizes]
+        sustained = max((g / max(c, 1e-9) for g, c in zip(gaps, chunk_audio[1:])), default=float("nan"))
+        audio_seconds = sum(chunk_audio)
+        print(
+            f"{turn:>4} {ttfp*1000:8.0f} {statistics.median(gaps)*1000 if gaps else float('nan'):9.0f}"
+            f" {_p95(gaps)*1000 if gaps else float('nan'):9.0f} {sustained:6.2f}"
+            f" {total/max(audio_seconds,1e-9):6.2f} {audio_seconds:8.2f} {len(sizes):7d}",
+            flush=True,
+        )
     return 0
 
 
