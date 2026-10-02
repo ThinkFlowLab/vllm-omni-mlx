@@ -144,6 +144,9 @@ def _openai_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: str
         except ApiError as exc:
             body = json.dumps({"error": {"message": exc.message, "type": exc.err_type}})
             yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
+        except Exception as exc:
+            body = json.dumps({"error": {"message": f"generation failed: {exc}", "type": "server_error"}})
+            yield f"data: {body}\n\ndata: [DONE]\n\n".encode()
 
     return stream()
 
@@ -208,6 +211,8 @@ def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: 
                     yield _sse_event("message_stop", {"type": "message_stop"})
         except ApiError as exc:
             yield _sse_event("error", {"type": "error", "error": {"type": exc.err_type, "message": exc.message}})
+        except Exception as exc:
+            yield _sse_event("error", {"type": "error", "error": {"type": "server_error", "message": f"generation failed: {exc}"}})
 
     return stream()
 

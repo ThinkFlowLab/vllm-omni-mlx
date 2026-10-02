@@ -113,13 +113,18 @@ class TextBackend:
 
     def __init__(self, model_ref: str):
         import mlx_lm
+        from mlx_lm.generate import make_prompt_cache
         from mlx_lm.sample_utils import make_sampler
 
         self._mlx_lm = mlx_lm
         self._make_sampler = make_sampler
+        self._make_cache = make_prompt_cache
         self.model, self.tokenizer = mlx_lm.load(model_ref)
         self.name = model_ref
         self._lock = threading.Lock()
+        # single-entry prefix cache: (token ids whose KV entries the cache holds,
+        # the live KV cache). Last conversation wins — matches the single-user target.
+        self._cached: tuple[Optional[list], Optional[list]] = (None, None)
 
     def _render_prompt(self, req: UnifiedRequest) -> str:
         messages = [
@@ -129,6 +134,15 @@ class TextBackend:
         if req.system:
             messages.insert(0, {"role": "system", "content": req.system})
         return self.tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+
+    def _encode(self, prompt) -> list:
+        # apply_chat_template returns token ids (transformers >= 5); encode only
+        # plain strings, mirroring mlx-lm's own handling so cached token ids
+        # line up with what a full re-prefill would have processed
+        if not isinstance(prompt, str):
+            return list(prompt)
+        add_special = self.tokenizer.bos_token is None or not prompt.startswith(self.tokenizer.bos_token)
+        return self.tokenizer.encode(prompt, add_special_tokens=add_special)
 
     def chat(self, req: UnifiedRequest) -> Iterator[Chunk]:
         prompt = self._render_prompt(req)
@@ -141,17 +155,24 @@ class TextBackend:
             yield from self._generate(prompt, req, sampler)
 
     def _generate(self, prompt: str, req: UnifiedRequest, sampler) -> Iterator[Chunk]:
-        prompt_tokens: Optional[int] = None
+        tokens = self._encode(prompt)
+        cached_tokens, cache = self._cached
+        if cache is not None and cached_tokens is not None and len(tokens) > len(cached_tokens) and tokens[: len(cached_tokens)] == cached_tokens:
+            # the new conversation extends the cached one: prefill only the suffix
+            feed, prompt_cache = tokens[len(cached_tokens) :], cache
+        else:
+            feed, prompt_cache = tokens, self._make_cache(self.model)
+        prompt_tokens = len(tokens)  # full count even when only a suffix is prefilled
         finish: Optional[str] = None
         completion_tokens = 0
+        gen_ids: list = []
         pending = ""
         make = _usage_first_emitter()
         for resp in self._mlx_lm.stream_generate(
-            self.model, self.tokenizer, prompt, max_tokens=req.max_tokens, sampler=sampler
+            self.model, self.tokenizer, feed, max_tokens=req.max_tokens, sampler=sampler, prompt_cache=prompt_cache
         ):
             completion_tokens += 1
-            if resp.prompt_tokens:
-                prompt_tokens = resp.prompt_tokens
+            gen_ids.append(resp.token)
             if resp.finish_reason:
                 finish = resp.finish_reason
             if not req.stop:
@@ -165,6 +186,9 @@ class TextBackend:
             if hit:
                 finish = "stop_sequence"
                 break
+        # store only after generation ran to completion: a consumer that drops
+        # the generator mid-stream leaves the previous (consistent) pair in place
+        self._cached = (tokens + gen_ids, prompt_cache)
         if pending:
             # text held back while watching for a stop sequence that never came
             yield make(pending, prompt_tokens)
@@ -181,7 +205,8 @@ class TextBackend:
 
 class OmniBackend:
     """Chat generation for multimodal models (image, audio, video) through
-    mlx-vlm. Requires the optional dependency: pip install 'vllm-omni-mlx[omni]'."""
+    mlx-vlm. Requires the optional dependency: pip install 'vllm-omni-mlx[omni]'.
+    No cross-turn prompt caching yet; mlx-vlm's PromptCacheState is the follow-up."""
 
     def __init__(self, model_ref: str):
         try:
