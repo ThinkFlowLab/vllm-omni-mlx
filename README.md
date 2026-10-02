@@ -61,8 +61,25 @@ re-prefill, so correctness never depends on the cache).
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI (streaming via SSE, `stop`, multimodal `image_url` / `input_audio` content parts) |
 | `POST /v1/messages` | Anthropic (streaming via SSE, `stop_sequences`, base64/URL image blocks) |
+| `POST /v1/audio/speech` | OpenAI audio (`wav` 24 kHz mono / raw `pcm`; needs `--tts-model`, `[tts]` extra) |
+| `GET /v1/audio/voices` | preset CustomVoice speakers for the loaded TTS model |
 | `GET /v1/models` | OpenAI model list |
 | `GET /health` | liveness |
+
+Speech synthesis quickstart:
+
+```sh
+pip install 'vllm-omni-mlx[tts]'
+vllm-omni-mlx --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --api-key demo
+curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
+    -d '{"input": "Hello from vllm omni em el ex.", "voice": "vivian"}' \
+    http://127.0.0.1:8000/v1/audio/speech -o speech.wav
+```
+
+`voice` picks a preset speaker (`GET /v1/audio/voices` lists them), `instructions`
+adds an emotion/style prompt, `language` forces a language (default auto);
+`speed` must be 1.0 for now. One-shot synthesis without a server:
+`vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
 OpenAI-style request:
 

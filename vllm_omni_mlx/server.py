@@ -221,24 +221,21 @@ def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: 
 # app factory
 # --------------------------------------------------------------------------
 
-def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
+def create_app(backend: Backend | None = None, api_key: str | None = None, tts_service=None) -> Starlette:
     async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
     async def models(request: Request) -> Response:
-        return JSONResponse(
+        entries = [
             {
-                "object": "list",
-                "data": [
-                    {
-                        "id": backend.name,
-                        "object": "model",
-                        "created": _STARTED_AT,
-                        "owned_by": "vllm-omni-mlx",
-                    }
-                ],
+                "id": name,
+                "object": "model",
+                "created": _STARTED_AT,
+                "owned_by": "vllm-omni-mlx",
             }
-        )
+            for name in ([backend.name] if backend is not None else []) + ([tts_service.name] if tts_service is not None else [])
+        ]
+        return JSONResponse({"object": "list", "data": entries})
 
     async def chat_completions(request: Request) -> Response:
         try:
@@ -304,11 +301,55 @@ def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
         except ApiError as exc:
             return _anthropic_error(exc)
 
-    return Starlette(
-        routes=[
-            Route("/health", health),
-            Route("/v1/models", models),
+    async def audio_speech(request: Request) -> Response:
+        try:
+            _check_auth(request, api_key)
+            payload = await _json_body(request)
+            text = payload.get("input")
+            if not isinstance(text, str):
+                raise ApiError(400, "input must be a string")
+            fmt = payload.get("response_format", "wav")
+            speed = payload.get("speed", 1.0)
+            voice = payload.get("voice")
+            instructions = payload.get("instructions")
+            language = payload.get("language")
+            data, content_type = await asyncio.to_thread(
+                tts_service.speech_bytes,
+                text,
+                voice,
+                fmt,
+                speed,
+                instructions,
+                language,
+            )
+            headers = {"Content-Disposition": 'attachment; filename="speech.wav"'} if fmt == "wav" else {}
+            return Response(data, media_type=content_type, headers=headers)
+        except ApiError as exc:
+            return _openai_error(exc)
+        except ValueError as exc:
+            return _openai_error(ApiError(400, str(exc), err_type="invalid_request_error"))
+        except Exception as exc:
+            return _openai_error(ApiError(500, f"speech generation failed: {exc}", err_type="server_error"))
+
+    async def audio_voices(request: Request) -> Response:
+        try:
+            _check_auth(request, api_key)
+        except ApiError as exc:
+            return _openai_error(exc)
+        return JSONResponse({"object": "list", "voices": tts_service.voices})
+
+    routes = [
+        Route("/health", health),
+        Route("/v1/models", models),
+    ]
+    if backend is not None:
+        routes += [
             Route("/v1/chat/completions", chat_completions, methods=["POST"]),
             Route("/v1/messages", messages, methods=["POST"]),
         ]
-    )
+    if tts_service is not None:
+        routes += [
+            Route("/v1/audio/speech", audio_speech, methods=["POST"]),
+            Route("/v1/audio/voices", audio_voices),
+        ]
+    return Starlette(routes=routes)

@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="vllm-omni-mlx",
         description="Lightweight OpenAI- and Anthropic-compatible omni-modality server for Apple Silicon.",
     )
-    parser.add_argument("--model", "-m", required=True, help="Hugging Face repo or local path of the model to serve")
+    parser.add_argument("--model", "-m", default=None, help="Hugging Face repo or local path of the chat model to serve (optional when --tts-model is set)")
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="bind port (default: 8000)")
     parser.add_argument(
@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=64,
         help="group size for KV-cache quantization (default: 64)",
     )
+    parser.add_argument(
+        "--tts-model",
+        default=None,
+        help="also serve speech synthesis on /v1/audio/* (Qwen3-TTS CustomVoice via the [tts] extra); the only model when --model is omitted",
+    )
     parser.add_argument("--log-level", default="info", help="uvicorn log level (default: info)")
     return parser
 
@@ -50,26 +55,43 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "tts":
         return _tts(argv[1:])
     args = build_parser().parse_args(argv)
+    if not args.model and not args.tts_model:
+        build_parser().error("--model or --tts-model is required")
 
     import uvicorn
 
-    from .backends import load_backend
     from .server import create_app
 
-    try:
-        backend = load_backend(
-            args.model,
-            preferred=args.backend,
-            draft_model=args.draft_model,
-            kv_bits=args.kv_bits,
-            kv_group_size=args.kv_group_size,
-        )
-    except (RuntimeError, ValueError, OSError) as exc:
-        print(f"error: failed to load model '{args.model}': {exc}", file=sys.stderr)
-        return 1
+    backend = None
+    if args.model:
+        from .backends import load_backend
 
-    print(f"serving {backend.name} ({type(backend).__name__}) on http://{args.host}:{args.port}", file=sys.stderr)
-    uvicorn.run(create_app(backend, api_key=args.api_key), host=args.host, port=args.port, log_level=args.log_level)
+        try:
+            backend = load_backend(
+                args.model,
+                preferred=args.backend,
+                draft_model=args.draft_model,
+                kv_bits=args.kv_bits,
+                kv_group_size=args.kv_group_size,
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"error: failed to load model '{args.model}': {exc}", file=sys.stderr)
+            return 1
+
+    tts_service = None
+    if args.tts_model:
+        from .tts.config import TTSConfig, load_tts_model
+        from .tts.service import TTSService
+
+        try:
+            tts_service = TTSService(load_tts_model(TTSConfig(model_ref=args.tts_model)), TTSConfig(model_ref=args.tts_model))
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"error: failed to load TTS model '{args.tts_model}': {exc}", file=sys.stderr)
+            return 1
+
+    names = [n for n in (getattr(backend, "name", None), getattr(tts_service, "name", None)) if n]
+    print(f"serving {', '.join(names)} on http://{args.host}:{args.port}", file=sys.stderr)
+    uvicorn.run(create_app(backend, api_key=args.api_key, tts_service=tts_service), host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
 
