@@ -1,6 +1,6 @@
-"""Qwen3-TTS port to MLX — milestone M1 (roadmap #2).
+"""Qwen3-TTS on MLX — milestone M1 (roadmap #2), adapting mlx-audio (MIT).
 
-Intentionally a placeholder: M1.1 (#10) scaffolds env/config/weights mapping,
-M1.2–M1.6 (#11–#15) port the model stages, M1.7 (#16) adds the
-OpenAI-compatible POST /v1/audio/speech endpoint on the existing app.
+M1.1 (#10) scaffolds config + weights loading; M1.2–M1.6 (#11–#15) wrap the
+model stages behind this package with parity tests; M1.7 (#16) serves
+OpenAI-compatible POST /v1/audio/speech on the existing Starlette app.
 """

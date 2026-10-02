@@ -16,9 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 omni = ["mlx-vlm>=0.7"]
+tts = ["mlx-audio>=0.5.7"]
 
 [project.scripts]
 vllm-omni-mlx = "vllm_omni_mlx.__main__:main"
 
 [tool.setuptools]
-packages = ["vllm_omni_mlx"]
+packages = ["vllm_omni_mlx", "vllm_omni_mlx.tts"]
