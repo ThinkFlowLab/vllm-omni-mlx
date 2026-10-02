@@ -88,6 +88,22 @@ def _write_temp_media(sink: list, data: bytes, media_type: Optional[str], prefix
     return path
 
 
+def _usage_first_emitter():
+    """Chunk factory that carries prompt_tokens on the first emitted chunk so
+    streaming consumers can report input usage at message start; later chunks
+    omit it. mlx-lm/mlx-vlm set prompt_tokens on every response, so it is
+    already known when the first text is emitted."""
+    state = {"sent": False}
+
+    def make(text: str, prompt_tokens: Optional[int]) -> Chunk:
+        pt = None if state["sent"] else prompt_tokens
+        if pt is not None:
+            state["sent"] = True
+        return Chunk(text=text, prompt_tokens=pt)
+
+    return make
+
+
 # --------------------------------------------------------------------------
 # text backend (mlx-lm)
 # --------------------------------------------------------------------------
@@ -129,6 +145,7 @@ class TextBackend:
         finish: Optional[str] = None
         completion_tokens = 0
         pending = ""
+        make = _usage_first_emitter()
         for resp in self._mlx_lm.stream_generate(
             self.model, self.tokenizer, prompt, max_tokens=req.max_tokens, sampler=sampler
         ):
@@ -139,18 +156,18 @@ class TextBackend:
                 finish = resp.finish_reason
             if not req.stop:
                 if resp.text:
-                    yield Chunk(text=resp.text)
+                    yield make(resp.text, prompt_tokens)
                 continue
             pending += resp.text
             emit, pending, hit = _stop_filter(pending, req.stop)
             if emit:
-                yield Chunk(text=emit)
+                yield make(emit, prompt_tokens)
             if hit:
                 finish = "stop_sequence"
                 break
         if pending:
             # text held back while watching for a stop sequence that never came
-            yield Chunk(text=pending)
+            yield make(pending, prompt_tokens)
         yield Chunk(
             finish_reason=finish or "stop",
             prompt_tokens=prompt_tokens,
@@ -239,6 +256,7 @@ class OmniBackend:
         finish: Optional[str] = None
         completion_tokens = 0
         pending = ""
+        make = _usage_first_emitter()
         for resp in stream:
             completion_tokens += 1
             if resp.prompt_tokens:
@@ -247,18 +265,18 @@ class OmniBackend:
                 finish = resp.finish_reason
             if not req.stop:
                 if resp.text:
-                    yield Chunk(text=resp.text)
+                    yield make(resp.text, prompt_tokens)
                 continue
             pending += resp.text
             emit, pending, hit = _stop_filter(pending, req.stop)
             if emit:
-                yield Chunk(text=emit)
+                yield make(emit, prompt_tokens)
             if hit:
                 finish = "stop_sequence"
                 break
         if pending:
             # text held back while watching for a stop sequence that never came
-            yield Chunk(text=pending)
+            yield make(pending, prompt_tokens)
         yield Chunk(
             finish_reason=finish or "stop",
             prompt_tokens=prompt_tokens,

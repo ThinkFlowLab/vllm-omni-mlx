@@ -118,7 +118,7 @@ def _openai_finish(finish: str) -> str:
     return {"stop": "stop", "length": "length", "stop_sequence": "stop"}.get(finish, "stop")
 
 
-def _openai_sse(req: UnifiedRequest, generator: Iterator[Chunk]) -> AsyncIterator[bytes]:
+def _openai_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: str) -> AsyncIterator[bytes]:
     async def stream() -> AsyncIterator[bytes]:
         cancel = threading.Event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -136,7 +136,7 @@ def _openai_sse(req: UnifiedRequest, generator: Iterator[Chunk]) -> AsyncIterato
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
-                    "model": req.model,
+                    "model": model_name,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": _openai_finish(chunk.finish_reason) if chunk.finish_reason else None}],
                 }
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
@@ -160,7 +160,7 @@ def _sse_event(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
-def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk]) -> AsyncIterator[bytes]:
+def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: str) -> AsyncIterator[bytes]:
     async def stream() -> AsyncIterator[bytes]:
         cancel = threading.Event()
         message_id = f"msg_{uuid.uuid4().hex[:24]}"
@@ -179,7 +179,7 @@ def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk]) -> AsyncIter
                                 "id": message_id,
                                 "type": "message",
                                 "role": "assistant",
-                                "model": req.model,
+                                "model": model_name,
                                 "content": [],
                                 "stop_reason": None,
                                 "stop_sequence": None,
@@ -240,6 +240,7 @@ def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
             _check_auth(request, api_key)
             req = normalize_openai(await _json_body(request))
             generator = backend.chat(req)
+            model_name = req.model or backend.name
             if not req.stream:
                 text, finish, prompt_tokens, completion_tokens = await asyncio.to_thread(_collect, generator)
                 return JSONResponse(
@@ -247,7 +248,7 @@ def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
                         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
                         "object": "chat.completion",
                         "created": int(time.time()),
-                        "model": req.model or backend.name,
+                        "model": model_name,
                         "choices": [
                             {
                                 "index": 0,
@@ -263,7 +264,7 @@ def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
                     }
                 )
             return StreamingResponse(
-                _openai_sse(req, generator),
+                _openai_sse(req, generator, model_name),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -275,6 +276,7 @@ def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
             _check_auth(request, api_key)
             req = normalize_anthropic(await _json_body(request))
             generator = backend.chat(req)
+            model_name = req.model or backend.name
             if not req.stream:
                 text, finish, prompt_tokens, completion_tokens = await asyncio.to_thread(_collect, generator)
                 return JSONResponse(
@@ -282,7 +284,7 @@ def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
                         "id": f"msg_{uuid.uuid4().hex[:24]}",
                         "type": "message",
                         "role": "assistant",
-                        "model": req.model or backend.name,
+                        "model": model_name,
                         "content": [{"type": "text", "text": text}],
                         "stop_reason": _anthropic_stop(finish),
                         "stop_sequence": None,
@@ -290,7 +292,7 @@ def create_app(backend: Backend, api_key: str | None = None) -> Starlette:
                     }
                 )
             return StreamingResponse(
-                _anthropic_sse(req, generator),
+                _anthropic_sse(req, generator, model_name),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
