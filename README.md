@@ -8,11 +8,27 @@ no scheduler, no worker pool, no FastAPI/pydantic — just Starlette plus `mlx-l
 
 ## Install
 
+Requires Python 3.10+ on an Apple Silicon Mac (MLX ships arm64-only wheels).
+
 ```sh
 python -m venv .venv && source .venv/bin/activate
 pip install -e .            # text models (mlx-lm)
 pip install -e '.[omni]'    # + vision/audio models (mlx-vlm)
 ```
+
+### Dependency footprint
+
+| Install | Direct deps | Resolved packages | Disk |
+| --- | --- | --- | --- |
+| core | `mlx-lm`, `starlette`, `uvicorn` | 38 | ~440 MB |
+| + `[omni]` | + `mlx-vlm` | 59 | ~750 MB |
+
+The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transformers`,
+`tokenizers`, `huggingface_hub`) plus starlette/uvicorn and almost nothing else —
+**no FastAPI, no pydantic, no torch**. The `[omni]` extra adds ~315 MB through
+`mlx-vlm` (opencv, pillow, scipy, mlx-audio — which does drag in fastapi/pydantic,
+contained to the optional path). Measured on macOS arm64 / Python 3.13 with
+mlx-lm 0.32 and mlx-vlm 0.7.
 
 ## Run
 
