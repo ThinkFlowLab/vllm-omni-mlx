@@ -99,11 +99,9 @@ def main() -> int:
             time.sleep(0.4)
 
     worker = threading.Thread(target=chat_loop)
-    start = time.perf_counter()
     worker.start()
     t0, ttfa_mixed, arrivals, sizes = speech_once()
     worker.join()
-    mixed_wall = time.perf_counter() - start
     chat_mixed = []
     while not results.empty():
         chat_mixed.append(results.get())
