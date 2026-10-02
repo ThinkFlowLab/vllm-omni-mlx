@@ -8,6 +8,7 @@ import unittest
 import wave
 import io
 
+from tests.audio_metrics import CATASTROPHIC_HNR_DB, CLEAN_VOICE_HNR_DB, wav_hnr_db
 from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot
 from vllm_omni_mlx.tts.generate import synthesize, wav_bytes
 
@@ -47,6 +48,26 @@ class GenerationTest(unittest.TestCase):
         self.assertGreater(rms, 0.01, "near-silence: decode path broken")
         self.assertLess(rms, 0.5, "full-scale energy: precision artifact")
         self.assertLessEqual(peak, 1.0)
+
+    def test_speech_hnr_above_floor(self):
+        # upstream vllm-omni's catastrophic-decode detector, calibrated per
+        # voice on the 4-bit model (issue #37): white noise ~-10 dB; vivian
+        # 0.95–2.44 dB across draws (clean-voice floor 0 dB); aiden and ryan
+        # sit lower intrinsically — catastrophic floor only.
+        cases = (
+            (EN, {"speaker": "vivian", "temperature": 0.0}, CLEAN_VOICE_HNR_DB),
+            (EN, {"speaker": "vivian"}, CLEAN_VOICE_HNR_DB),
+            (EN, {"speaker": "ryan"}, CATASTROPHIC_HNR_DB),
+            (ZH, {"speaker": "aiden"}, CATASTROPHIC_HNR_DB),
+        )
+        for text, overrides, floor in cases:
+            with self.subTest(**{k: v for k, v in overrides.items() if k == "speaker"}):
+                hnr = wav_hnr_db(self._wav(text, **overrides))
+                self.assertGreater(
+                    hnr,
+                    floor,
+                    f"HNR {hnr:.2f} dB below {floor} dB floor: output is noise-like, not speech",
+                )
 
     def test_chinese_aiden_default_sampling(self):
         data = self._wav(ZH, speaker="aiden")

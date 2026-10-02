@@ -98,10 +98,26 @@ class RealSpeechRoundTripTest(unittest.TestCase):
             headers={"Authorization": "Bearer k1"},
         )
         self.assertEqual(response.status_code, 200)
+        # upstream-style floor: >1s of 24 kHz 16-bit mono (min_audio_bytes)
+        self.assertGreater(len(response.content), 2 * 24000)
         with wave.open(io.BytesIO(response.content)) as wav:
             self.assertEqual(wav.getframerate(), 24000)
             self.assertEqual(wav.getnchannels(), 1)
             self.assertGreater(wav.getnframes(), 24000)  # >1s of audio
+
+    def test_pcm_output_is_speech_not_noise(self):
+        from tests.audio_metrics import CLEAN_VOICE_HNR_DB, int16_pcm_hnr_db
+
+        response = self.client.post(
+            "/v1/audio/speech",
+            json={"input": "The audio endpoint works end to end.", "voice": "vivian", "response_format": "pcm"},
+            headers={"Authorization": "Bearer k1"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.content) % 2, 0)
+        self.assertGreater(len(response.content), 2 * 24000)
+        hnr = int16_pcm_hnr_db(response.content)
+        self.assertGreater(hnr, CLEAN_VOICE_HNR_DB, f"HNR {hnr:.2f} dB below floor: noise-like output")
 
 
 if __name__ == "__main__":
