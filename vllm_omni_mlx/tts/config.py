@@ -31,6 +31,10 @@ class TTSConfig:
     repetition_penalty: float = 1.05
     max_tokens: int = 4096
     streaming_interval: float = 2.0
+    # first-chunk size for the streaming path (#39 fast path): seconds of
+    # audio emitted as soon as they exist, quantized to a power-of-two frame
+    # bucket ≤ streaming_interval's chunk (see tts/stream_loop.py)
+    streaming_initial_interval: float = 0.2
 
     def with_overrides(self, **overrides: Any) -> "TTSConfig":
         known = {k: v for k, v in overrides.items() if v is not None and k in TTSConfig.__dataclass_fields__ and k != "model_ref"}

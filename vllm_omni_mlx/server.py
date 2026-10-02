@@ -315,6 +315,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             language = payload.get("language")
             stream = bool(payload.get("stream", False))
             interval = payload.get("streaming_interval")
+            initial_interval = payload.get("streaming_initial_interval")
             if stream:
                 if fmt not in (None, "wav", "pcm") and payload.get("response_format") is not None:
                     raise ApiError(400, f"response_format must be 'wav' or 'pcm', got '{fmt}'")
@@ -328,6 +329,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
                     instructions,
                     language,
                     float(interval) if interval is not None else None,
+                    float(initial_interval) if initial_interval is not None else None,
                 )
                 return StreamingResponse(
                     chunks,

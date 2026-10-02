@@ -27,7 +27,7 @@ class FakeTTSService:
         payload = f"{speaker}|{input}|{instructions}|{language}".encode()
         return (payload if response_format == "pcm" else b"RIFF" + payload), "audio/pcm" if response_format == "pcm" else "audio/wav"
 
-    def speech_stream(self, input, voice=None, speed=1.0, instructions=None, language=None, streaming_interval=None):
+    def speech_stream(self, input, voice=None, speed=1.0, instructions=None, language=None, streaming_interval=None, streaming_initial_interval=None):
         # eager validation like the real service, then a lazy byte generator
         if not input or not input.strip():
             raise ValueError("input must be a non-empty string")
@@ -38,6 +38,8 @@ class FakeTTSService:
             raise ValueError(f"voice '{voice}' is not one of the preset voices")
         if streaming_interval is not None and not 0 < streaming_interval <= 10:
             raise ValueError("streaming_interval must be in (0, 10] seconds")
+        if streaming_initial_interval is not None and not 0 < streaming_initial_interval <= 10:
+            raise ValueError("streaming_initial_interval must be in (0, 10] seconds")
 
         def gen():
             yield b"CHUNK-ONE|"
@@ -120,6 +122,12 @@ class AudioRoutesTest(unittest.TestCase):
             headers={"Authorization": "Bearer k1"},
         )
         self.assertEqual(bad_interval.status_code, 400)
+        bad_initial = self.client.post(
+            "/v1/audio/speech",
+            json={"input": "hi", "stream": True, "streaming_initial_interval": 0},
+            headers={"Authorization": "Bearer k1"},
+        )
+        self.assertEqual(bad_initial.status_code, 400)
         bad_voice = self.client.post(
             "/v1/audio/speech",
             json={"input": "hi", "stream": True, "voice": "celebrity"},

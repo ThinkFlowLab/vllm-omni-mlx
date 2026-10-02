@@ -82,7 +82,10 @@ adds an emotion/style prompt, `language` forces a language (default auto);
 PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
 WAV — first audio typically lands in under 0.5 s instead of after the full
 generation; `streaming_interval` (default 0.5 s) trades first-audio latency
-for chunk cadence. One-shot synthesis without a server:
+for chunk cadence, and `streaming_initial_interval` (default 0.2 s) emits the
+first chunk as soon as that much audio exists (quantized to a power-of-two
+frame bucket, so compiled decode shapes stay bounded) — measured time to
+first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
 `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
 OpenAI-style request:

@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--format", choices=("wav", "pcm"), default="wav")
     parser.add_argument("--stream", action="store_true", help="chunked pcm streaming; reports time-to-first-byte")
     parser.add_argument("--interval", type=float, default=None, help="streaming_interval seconds (default 0.5)")
+    parser.add_argument("--initial-interval", type=float, default=None, help="streaming_initial_interval seconds — first-chunk size for time-to-first-audio (default 0.2)")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -33,6 +34,8 @@ def main() -> int:
         body["response_format"] = "pcm"
         if args.interval:
             body["streaming_interval"] = args.interval
+        if args.initial_interval:
+            body["streaming_initial_interval"] = args.initial_interval
     if args.language:
         body["language"] = args.language
     if args.instructions:

@@ -17,6 +17,11 @@ import mlx.core as mx
 from .config import TTSConfig
 from .generate import synthesize, wav_bytes
 from .prompt_embeds import PromptEmbeds
+from .stream_loop import synthesize_stream
+
+# stream-path chunk default (#40's measured knee; the buffered path keeps
+# TTSConfig.streaming_interval — chunking is irrelevant when joining)
+DEFAULT_STREAM_INTERVAL = 0.5
 
 
 def _pcm16(chunk: mx.array) -> bytes:
@@ -66,6 +71,7 @@ class TTSService:
         instructions: Optional[str] = None,
         language: Optional[str] = None,
         streaming_interval: Optional[float] = None,
+        streaming_initial_interval: Optional[float] = None,
     ) -> "Iterator[bytes]":
         """Yield 16-bit PCM mono chunks (24 kHz) as they are generated.
 
@@ -74,17 +80,24 @@ class TTSService:
         streaming_interval defaults to 0.5 s — the measured knee where first
         audio lands under ~0.5 s; smaller buys faster first audio at the cost
         of choppier cadence (total RTF is interval-independent, ~0.9 on the
-        4-bit model — see #39's sweep).
+        4-bit model — see #39's sweep). streaming_initial_interval (default
+        0.2 s) is the #39 fast path: the first chunk is emitted as soon as
+        that much audio exists, independent of the steady chunk size, so
+        TTFA is not floored by streaming_interval.
         """
         overrides = self._validated_overrides(input, voice, speed, instructions, language)
-        interval = 0.5 if streaming_interval is None else streaming_interval
+        interval = DEFAULT_STREAM_INTERVAL if streaming_interval is None else streaming_interval
         if not 0.0 < interval <= 10.0:
             raise ValueError("streaming_interval must be in (0, 10] seconds")
         overrides["streaming_interval"] = interval
+        if streaming_initial_interval is not None:
+            if not 0.0 < streaming_initial_interval <= 10.0:
+                raise ValueError("streaming_initial_interval must be in (0, 10] seconds")
+            overrides["streaming_initial_interval"] = streaming_initial_interval
 
         def stream() -> Iterator[bytes]:
             with self._lock:
-                for chunk in synthesize(self._model, self.config, input, **overrides):
+                for chunk in synthesize_stream(self._model, self.config, input, **overrides):
                     yield _pcm16(chunk)
 
         return stream()

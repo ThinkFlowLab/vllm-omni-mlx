@@ -80,11 +80,25 @@ def main(argv: list[str] | None = None) -> int:
 
     tts_service = None
     if args.tts_model:
+        import time as _time
+
         from .tts.config import TTSConfig, load_tts_model
-        from .tts.service import TTSService
+        from .tts.service import DEFAULT_STREAM_INTERVAL, TTSService
+        from .tts.stream_loop import prewarm_streaming
 
         try:
-            tts_service = TTSService(load_tts_model(TTSConfig(model_ref=args.tts_model)), TTSConfig(model_ref=args.tts_model))
+            tts_config = TTSConfig(model_ref=args.tts_model)
+            model = load_tts_model(tts_config)
+            # trace the compiled streaming_step shapes serving will hit, so
+            # the first request pays no compile (failure just defers the
+            # trace to that request)
+            started = _time.perf_counter()
+            try:
+                shapes = prewarm_streaming(model, DEFAULT_STREAM_INTERVAL, tts_config.streaming_initial_interval)
+                print(f"tts streaming prewarm (shapes {shapes}) done in {_time.perf_counter() - started:.1f}s", file=sys.stderr)
+            except Exception as exc:
+                print(f"warning: tts streaming prewarm failed ({exc}); first request will trace on demand", file=sys.stderr)
+            tts_service = TTSService(model, tts_config)
         except (RuntimeError, ValueError, OSError) as exc:
             print(f"error: failed to load TTS model '{args.tts_model}': {exc}", file=sys.stderr)
             return 1
