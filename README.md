@@ -8,21 +8,27 @@ no scheduler, no worker pool, no FastAPI/pydantic — just Starlette plus `mlx-l
 
 ## Install
 
-With [uv](https://docs.astral.sh/uv/) — a `uv.lock` is committed, pinning the
-full MLX stack (mlx, mlx-lm, mlx-vlm, …):
-
-```sh
-uv sync --extra omni        # text-only: plain `uv sync`
-uv run vllm-omni-mlx --model mlx-community/Qwen2.5-7B-Instruct-4bit
-```
-
-Or with pip:
+Requires Python 3.10+ on an Apple Silicon Mac (MLX ships arm64-only wheels).
 
 ```sh
 python -m venv .venv && source .venv/bin/activate
 pip install -e .            # text models (mlx-lm)
 pip install -e '.[omni]'    # + vision/audio models (mlx-vlm)
 ```
+
+### Dependency footprint
+
+| Install | Direct deps | Resolved packages | Disk |
+| --- | --- | --- | --- |
+| core | `mlx-lm`, `starlette`, `uvicorn` | 38 | ~440 MB |
+| + `[omni]` | + `mlx-vlm` | 59 | ~750 MB |
+
+The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transformers`,
+`tokenizers`, `huggingface_hub`) plus starlette/uvicorn and almost nothing else —
+**no FastAPI, no pydantic, no torch**. The `[omni]` extra adds ~315 MB through
+`mlx-vlm` (opencv, pillow, scipy, mlx-audio — which does drag in fastapi/pydantic,
+contained to the optional path). Measured on macOS arm64 / Python 3.13 with
+mlx-lm 0.32 and mlx-vlm 0.7.
 
 ## Run
 
@@ -68,6 +74,8 @@ Both accept `"stream": true`; media arrives as data URLs (OpenAI `image_url`) or
 base64/URL sources (Anthropic `image` blocks). Either way it reaches the model the same way.
 
 ## Design notes & limits
+
+See [docs/architecture.md](docs/architecture.md) for the architecture diagram and rationale.
 
 - **Single model, serialized generation.** One model instance per process; a lock serializes
   generation. Concurrent requests queue instead of racing the GPU. This is the intended
