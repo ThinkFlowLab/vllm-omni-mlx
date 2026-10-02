@@ -91,5 +91,9 @@ See [docs/architecture.md](docs/architecture.md) for the architecture diagram an
 python -m unittest discover -s tests   # stdlib unittest, no extra deps
 ```
 
+Profiling and benchmarking on Apple Silicon: [docs/profiling.md](docs/profiling.md) —
+timing harness (time the `mx.eval` bracket, mind GPU clock ramp), Metal GPU capture
+for per-kernel truth, powermetrics/xctrace for SoC counters.
+
 Layout: `schemas.py` (OpenAI/Anthropic → one internal request), `backends.py` (mlx-lm text backend,
 mlx-vlm omni backend, stop-sequence filtering), `server.py` (routes, SSE), `__main__.py` (CLI).

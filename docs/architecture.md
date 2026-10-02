@@ -54,4 +54,5 @@ flowchart TD
   layers above the boundary without touching model code.
 - **Latency levers live behind the lock.** The planned prompt cache (#4),
   speculative decoding and KV-quantization flags (#5) accelerate the same
-  serialized path; the probe harness (#6) measures it.
+  serialized path; the probe harness (#6) measures it — methodology in
+  [profiling.md](profiling.md).
