@@ -2,7 +2,9 @@
 """Coexistence benchmark (#39): chat + TTS in ONE process — the single-user
 serving shape this project targets.
 
-Loads a chat backend and the TTS service side by side, then measures:
+Loads a chat backend and the TTS model side by side (single process) and drives
+`synthesize()` directly — measuring GPU+GIL coexistence of the two workloads,
+not the full serving stack (no service lock, no HTTP):
   - speech sustained RTF / TTFA / cadence while chat requests interleave
   - chat TTFT and tok/s alone vs during speech
   - peak unified memory with both models resident
@@ -51,6 +53,7 @@ def main() -> int:
         req = UnifiedRequest(model="", messages=[Message(role="user", parts=[Part(kind="text", text="Describe the sea in two sentences.")])], max_tokens=64)
         t0 = time.perf_counter()
         ttft = None
+        first = None
         last = None
         tokens = 0
         for chunk in backend.chat(req):
@@ -58,9 +61,13 @@ def main() -> int:
             if chunk.text:
                 if ttft is None:
                     ttft = now - t0
+                if first is None:
+                    first = now
                 last = now
                 tokens += 1
-        return ttft, tokens / (last - t0 + 1e-9) if last else 0.0
+        # inter-token rate excludes TTFT from the denominator
+        rate = (tokens - 1) / (last - first) if last and first and tokens > 1 else 0.0
+        return ttft, rate
 
     def speech_once():
         t0 = time.perf_counter()

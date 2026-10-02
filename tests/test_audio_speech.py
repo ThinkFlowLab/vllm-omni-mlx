@@ -3,6 +3,7 @@ auth, formats, and model listing with a fake service; plus a weight-gated
 real round-trip through the actual TTS model."""
 
 import unittest
+from unittest import mock
 
 from starlette.testclient import TestClient
 
@@ -191,6 +192,38 @@ class RealSpeechRoundTripTest(unittest.TestCase):
         self.assertGreater(len(response.content), 2 * 24000)
         hnr = int16_pcm_hnr_db(response.content)
         self.assertGreater(hnr, CLEAN_VOICE_HNR_DB, f"HNR {hnr:.2f} dB below floor: noise-like output")
+
+
+class StreamLockReleaseTest(unittest.TestCase):
+    """#40 review P3: closing a stream mid-generation releases the service
+    lock at the next chunk boundary — the batch-1 guarantee for disconnects."""
+
+    def test_early_close_releases_service_lock(self):
+        from types import SimpleNamespace
+
+        import mlx.core as mx
+
+        import vllm_omni_mlx.tts.service as service_module
+        from vllm_omni_mlx.tts.config import TTSConfig
+        from vllm_omni_mlx.tts.service import TTSService
+
+        def fake_synthesize(model, config, text, **kwargs):
+            yield mx.zeros(2400)
+            yield mx.zeros(2400)
+
+        model = SimpleNamespace(
+            config=SimpleNamespace(
+                talker_config=SimpleNamespace(spk_id={"vivian": 1}, codec_language_id={})
+            )
+        )
+        with mock.patch.object(service_module, "synthesize_stream", fake_synthesize):
+            service = TTSService(model, TTSConfig())
+            stream = service.speech_stream("hold the line", voice="vivian")
+            next(stream)  # first chunk arrives -> lock held
+            self.assertFalse(service._lock.acquire(blocking=False))
+            stream.close()  # client disconnect
+            self.assertTrue(service._lock.acquire(blocking=False), "lock leaked after stream close")
+            service._lock.release()
 
 
 if __name__ == "__main__":

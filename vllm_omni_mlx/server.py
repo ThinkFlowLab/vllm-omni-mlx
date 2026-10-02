@@ -317,7 +317,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             interval = payload.get("streaming_interval")
             initial_interval = payload.get("streaming_initial_interval")
             if stream:
-                if fmt not in (None, "wav", "pcm") and payload.get("response_format") is not None:
+                if fmt not in ("wav", "pcm"):
                     raise ApiError(400, f"response_format must be 'wav' or 'pcm', got '{fmt}'")
                 # a RIFF header needs the total length; streaming is raw PCM
                 if payload.get("response_format") == "wav":

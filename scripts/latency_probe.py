@@ -97,7 +97,7 @@ def probe_audio_stream(args, headers: dict) -> int:
     each chunk covers (sustained ratio > 1 means a playback underrun), total
     RTF, and audio duration."""
     payload = {"input": args.audio_text, "voice": args.voice, "stream": True}
-    if args.interval:
+    if args.interval is not None:  # let the server reject 0 rather than silently dropping it
         payload["streaming_interval"] = args.interval
     body = json.dumps(payload).encode()
 
@@ -131,7 +131,7 @@ def probe_audio_stream(args, headers: dict) -> int:
         print(
             f"{turn:>4} {ttfp*1000:8.0f} {statistics.median(gaps)*1000 if gaps else float('nan'):9.0f}"
             f" {_p95(gaps)*1000 if gaps else float('nan'):9.0f} {sustained:6.2f}"
-            f" {total/max(audio_seconds,1e-9):6.2f} {audio_seconds:8.2f} {len(sizes):7d}",
+            f" {total/max(audio_seconds,1e-9):6.2f} {audio_seconds:8.2f} {len(gaps_arrivals):7d}",
             flush=True,
         )
     return 0
