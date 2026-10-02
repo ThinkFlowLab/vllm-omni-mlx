@@ -313,6 +313,33 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             voice = payload.get("voice")
             instructions = payload.get("instructions")
             language = payload.get("language")
+            stream = bool(payload.get("stream", False))
+            interval = payload.get("streaming_interval")
+            if stream:
+                if fmt not in (None, "wav", "pcm") and payload.get("response_format") is not None:
+                    raise ApiError(400, f"response_format must be 'wav' or 'pcm', got '{fmt}'")
+                # a RIFF header needs the total length; streaming is raw PCM
+                if payload.get("response_format") == "wav":
+                    raise ApiError(400, "streaming audio is raw pcm (24 kHz 16-bit mono); wav requires stream: false")
+                chunks = tts_service.speech_stream(
+                    text,
+                    voice,
+                    speed,
+                    instructions,
+                    language,
+                    float(interval) if interval is not None else None,
+                )
+                return StreamingResponse(
+                    chunks,
+                    media_type="audio/pcm",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Audio-Sample-Rate": "24000",
+                        "X-Audio-Channels": "1",
+                        "X-Audio-Bits": "16",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
             data, content_type = await asyncio.to_thread(
                 tts_service.speech_bytes,
                 text,

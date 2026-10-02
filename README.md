@@ -78,7 +78,11 @@ curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
 
 `voice` picks a preset speaker (`GET /v1/audio/voices` lists them), `instructions`
 adds an emotion/style prompt, `language` forces a language (default auto);
-`speed` must be 1.0 for now. One-shot synthesis without a server:
+`speed` must be 1.0 for now. Streaming: pass `"stream": true` for chunked raw
+PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
+WAV — first audio typically lands in under 0.5 s instead of after the full
+generation; `streaming_interval` (default 0.5 s) trades first-audio latency
+for chunk cadence. One-shot synthesis without a server:
 `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
 OpenAI-style request:

@@ -10,13 +10,19 @@ from __future__ import annotations
 
 import threading
 from array import array
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import mlx.core as mx
 
 from .config import TTSConfig
 from .generate import synthesize, wav_bytes
 from .prompt_embeds import PromptEmbeds
+
+
+def _pcm16(chunk: mx.array) -> bytes:
+    """One float chunk → raw little-endian 16-bit mono bytes (OpenAI 'pcm')."""
+    samples = mx.clip(chunk.reshape(-1), -1.0, 1.0)
+    return array("h", (samples * 32767.0).astype(mx.int16).tolist()).tobytes()
 
 
 class TTSService:
@@ -45,10 +51,47 @@ class TTSService:
     ) -> tuple[bytes, str]:
         """Synthesize `input` to (payload, content_type). Raises ValueError on
         invalid requests; generation is serialized under the service lock."""
+        overrides = self._validated_overrides(input, voice, speed, instructions, language)
+        with self._lock:
+            chunks = synthesize(self._model, self.config, input, **overrides)
+            if response_format == "wav":
+                return wav_bytes(chunks), "audio/wav"
+            return b"".join(_pcm16(chunk) for chunk in chunks), "audio/pcm"
+
+    def speech_stream(
+        self,
+        input: str,
+        voice: Optional[str] = None,
+        speed: float = 1.0,
+        instructions: Optional[str] = None,
+        language: Optional[str] = None,
+        streaming_interval: Optional[float] = None,
+    ) -> "Iterator[bytes]":
+        """Yield 16-bit PCM mono chunks (24 kHz) as they are generated.
+
+        The service lock is held for the whole stream (batch-1); a client
+        disconnect closes the generator and releases it at the next chunk.
+        streaming_interval defaults to 0.5 s — the measured knee where first
+        audio lands under ~0.5 s; smaller buys faster first audio at the cost
+        of choppier cadence (total RTF is interval-independent, ~0.9 on the
+        4-bit model — see #39's sweep).
+        """
+        overrides = self._validated_overrides(input, voice, speed, instructions, language)
+        interval = 0.5 if streaming_interval is None else streaming_interval
+        if not 0.0 < interval <= 10.0:
+            raise ValueError("streaming_interval must be in (0, 10] seconds")
+        overrides["streaming_interval"] = interval
+
+        def stream() -> Iterator[bytes]:
+            with self._lock:
+                for chunk in synthesize(self._model, self.config, input, **overrides):
+                    yield _pcm16(chunk)
+
+        return stream()
+
+    def _validated_overrides(self, input, voice, speed, instructions, language) -> dict:
         if not input or not input.strip():
             raise ValueError("input must be a non-empty string")
-        if response_format not in ("wav", "pcm"):
-            raise ValueError(f"response_format must be 'wav' or 'pcm', got '{response_format}'")
         if speed != 1.0:
             raise ValueError("speed != 1.0 is not supported yet")
         speaker = (voice or self.config.speaker).lower()
@@ -59,14 +102,4 @@ class TTSService:
             overrides["instruct"] = instructions
         if language:
             overrides["language"] = language
-
-        with self._lock:
-            chunks = synthesize(self._model, self.config, input, **overrides)
-            if response_format == "wav":
-                return wav_bytes(chunks), "audio/wav"
-            # raw little-endian 16-bit mono at 24 kHz (OpenAI 'pcm' shape)
-            parts = []
-            for chunk in chunks:
-                samples = mx.clip(chunk.reshape(-1), -1.0, 1.0)
-                parts.append(array("h", (samples * 32767.0).astype(mx.int16).tolist()).tobytes())
-            return b"".join(parts), "audio/pcm"
+        return overrides
