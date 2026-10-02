@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-omni-mlx"
+version = "0.1.0"
+description = "Lightweight OpenAI- and Anthropic-compatible omni-modality inference server for Apple Silicon (MLX)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-lm>=0.28",
+    "starlette>=0.37",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+omni = ["mlx-vlm>=0.7"]
+
+[project.scripts]
+vllm-omni-mlx = "vllm_omni_mlx.__main__:main"
+
+[tool.setuptools]
+packages = ["vllm_omni_mlx"]
