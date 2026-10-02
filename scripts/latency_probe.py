@@ -38,7 +38,38 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-tokens", type=int, default=128, help="generation budget per turn (default: 128)")
     parser.add_argument("--system-words", type=int, default=500, help="system-prompt length in words, sizing the prefilled prefix (default: 500)")
     parser.add_argument("--temperature", type=float, default=0.0, help="sampling temperature (default: 0)")
+    parser.add_argument("--audio", action="store_true", help="probe POST /v1/audio/speech instead of chat: reports TTFB, total, RTF per turn")
+    parser.add_argument("--voice", default="vivian", help="preset voice for --audio mode (default: vivian)")
+    parser.add_argument("--audio-text", default="Welcome to the speech latency probe. This sentence is long enough to make the real time factor meaningful.", help="text synthesized in --audio mode")
     return parser
+
+
+def probe_audio(args) -> int:
+    """--audio mode: POST /v1/audio/speech per turn, reporting time-to-first-
+    byte (server + prefill overhead; chunked-audio TTFA arrives with M2
+    streaming), total wall, audio seconds, and RTF."""
+    headers = {"Content-Type": "application/json"}
+    if args.api_key:
+        headers["Authorization"] = f"Bearer {args.api_key}"
+
+    print(f"probing {args.url} /v1/audio/speech — voice {args.voice}, {args.turns} turns")
+    print(f"{'turn':>4} {'TTFB ms':>9} {'total s':>8} {'audio s':>8} {'RTF':>6}")
+    for turn in range(1, args.turns + 1):
+        body = json.dumps({"input": args.audio_text, "voice": args.voice}).encode()
+        request = urllib.request.Request(f"{args.url}/v1/audio/speech", data=body, headers=headers)
+        start = time.perf_counter()
+        ttfb = None
+        with _OPENER.open(request, timeout=600) as response:
+            first = response.read(1)
+            ttfb = time.perf_counter() - start
+            rest = response.read()
+        total = time.perf_counter() - start
+        audio_seconds = (len(first) + len(rest) - 44) / 2 / 24000  # 16-bit mono
+        if ttfb is None or not (first or rest):
+            print(f"{turn:>4}  no audio returned", flush=True)
+            continue
+        print(f"{turn:>4} {ttfb*1000:9.0f} {total:8.2f} {audio_seconds:8.2f} {total/max(audio_seconds, 1e-9):6.2f}", flush=True)
+    return 0
 
 
 def probe_turn(messages: list, args) -> dict:
@@ -109,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     system = " ".join(["You are a careful assistant; keep the full context in mind."] * max(1, args.system_words // 9))
+    if args.audio:
+        return probe_audio(args)
+
     messages = [{"role": "system", "content": system}]
 
     print(f"probing {args.url} — {args.turns} turns, ~{args.system_words}-word system prefix, {args.max_tokens}-token budget")
