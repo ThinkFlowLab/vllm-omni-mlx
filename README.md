@@ -8,6 +8,16 @@ no scheduler, no worker pool, no FastAPI/pydantic — just Starlette plus `mlx-l
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/) — a `uv.lock` is committed, pinning the
+full MLX stack (mlx, mlx-lm, mlx-vlm, …):
+
+```sh
+uv sync --extra omni        # text-only: plain `uv sync`
+uv run vllm-omni-mlx --model mlx-community/Qwen2.5-7B-Instruct-4bit
+```
+
+Or with pip:
+
 ```sh
 python -m venv .venv && source .venv/bin/activate
 pip install -e .            # text models (mlx-lm)
