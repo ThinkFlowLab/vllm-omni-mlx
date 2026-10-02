@@ -1,0 +1,38 @@
+# macOS arm64 because mlx is macOS-only: mlx-lm declares
+# `mlx>=0.32.2; platform_system == "Darwin"`, so a Linux runner would install
+# the stack without mlx and never exercise the target platform (see #19).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + unit tests
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Lint (ruff, bug-catching subset)
+        # Full `ruff check` + `ruff format --check` needs a cleanup pass first
+        # (21 UP-rule violations, 5 files unformatted) — tracked in #19.
+        run: |
+          python -m pip install ruff==0.16.10
+          ruff check --select E9,F .
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
