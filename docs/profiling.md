@@ -9,6 +9,11 @@ the previous one can't answer the question. All verified on mlx 0.32 / arm64.
 | 2. Metal GPU capture | which kernel, per-kernel time, gaps in the stream | Xcode to read |
 | 3. SoC counters | throttling, frequency, bandwidth ceilings | sudo / Xcode |
 
+These procedures are packaged as an agent skill —
+[ThinkFlowLab/mlx-perf](https://github.com/ThinkFlowLab/mlx-perf) — which adds
+run-directory discipline, a signal→cause→fix diagnosis playbook, and REPORT.md
+generation on top of the tiers below.
+
 ## Tier 1 — time the eval bracket
 
 MLX is lazy: graph-building calls only queue work; `mx.eval()` executes it.
