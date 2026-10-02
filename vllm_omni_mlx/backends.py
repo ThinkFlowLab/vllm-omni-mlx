@@ -111,7 +111,7 @@ def _usage_first_emitter():
 class TextBackend:
     """Chat generation for text LLMs through mlx-lm."""
 
-    def __init__(self, model_ref: str):
+    def __init__(self, model_ref: str, draft_model_ref: Optional[str] = None, kv_bits: Optional[int] = None, kv_group_size: int = 64):
         import mlx_lm
         from mlx_lm.generate import make_prompt_cache
         from mlx_lm.sample_utils import make_sampler
@@ -121,9 +121,16 @@ class TextBackend:
         self._make_cache = make_prompt_cache
         self.model, self.tokenizer = mlx_lm.load(model_ref)
         self.name = model_ref
+        # speculative decoding: draft model must share the main model's tokenizer
+        self._draft_model = mlx_lm.load(draft_model_ref)[0] if draft_model_ref else None
+        self._kv_kwargs: dict = {}
+        if kv_bits:
+            self._kv_kwargs = {"kv_bits": kv_bits, "kv_group_size": kv_group_size}
         self._lock = threading.Lock()
         # single-entry prefix cache: (token ids whose KV entries the cache holds,
         # the live KV cache). Last conversation wins — matches the single-user target.
+        # Unused while a draft model is set: speculative batching makes the
+        # fed-tokens invariant across turns uncertain, so we re-prefill instead.
         self._cached: tuple[Optional[list], Optional[list]] = (None, None)
 
     def _render_prompt(self, req: UnifiedRequest) -> str:
@@ -157,20 +164,33 @@ class TextBackend:
     def _generate(self, prompt: str, req: UnifiedRequest, sampler) -> Iterator[Chunk]:
         tokens = self._encode(prompt)
         cached_tokens, cache = self._cached
-        if cache is not None and cached_tokens is not None and len(tokens) > len(cached_tokens) and tokens[: len(cached_tokens)] == cached_tokens:
-            # the new conversation extends the cached one: prefill only the suffix
-            feed, prompt_cache = tokens[len(cached_tokens) :], cache
-        else:
-            feed, prompt_cache = tokens, self._make_cache(self.model)
+        reusable = (
+            self._draft_model is None
+            and cache is not None
+            and cached_tokens is not None
+            and len(tokens) > len(cached_tokens)
+            and tokens[: len(cached_tokens)] == cached_tokens
+        )
         prompt_tokens = len(tokens)  # full count even when only a suffix is prefilled
         finish: Optional[str] = None
         completion_tokens = 0
         gen_ids: list = []
         pending = ""
         make = _usage_first_emitter()
-        for resp in self._mlx_lm.stream_generate(
-            self.model, self.tokenizer, feed, max_tokens=req.max_tokens, sampler=sampler, prompt_cache=prompt_cache
-        ):
+        gen_kwargs: dict = dict(max_tokens=req.max_tokens, sampler=sampler, **self._kv_kwargs)
+        if self._draft_model is not None:
+            # mlx-lm's speculative path builds its own model+draft caches and
+            # splices any prompt_cache passed in — never supply one alongside a draft
+            gen_kwargs["draft_model"] = self._draft_model
+            feed = tokens
+        elif reusable:
+            # the new conversation extends the cached one: prefill only the suffix
+            feed = tokens[len(cached_tokens) :]
+            gen_kwargs["prompt_cache"] = cache
+        else:
+            feed = tokens
+            gen_kwargs["prompt_cache"] = self._make_cache(self.model)
+        for resp in self._mlx_lm.stream_generate(self.model, self.tokenizer, feed, **gen_kwargs):
             completion_tokens += 1
             gen_ids.append(resp.token)
             if resp.finish_reason:
@@ -188,7 +208,8 @@ class TextBackend:
                 break
         # store only after generation ran to completion: a consumer that drops
         # the generator mid-stream leaves the previous (consistent) pair in place
-        self._cached = (tokens + gen_ids, prompt_cache)
+        if self._draft_model is None:
+            self._cached = (tokens + gen_ids, gen_kwargs["prompt_cache"])
         if pending:
             # text held back while watching for a stop sequence that never came
             yield make(pending, prompt_tokens)
@@ -208,7 +229,7 @@ class OmniBackend:
     mlx-vlm. Requires the optional dependency: pip install 'vllm-omni-mlx[omni]'.
     No cross-turn prompt caching yet; mlx-vlm's PromptCacheState is the follow-up."""
 
-    def __init__(self, model_ref: str):
+    def __init__(self, model_ref: str, kv_bits: Optional[int] = None, kv_group_size: int = 64):
         try:
             import mlx_vlm
         except ImportError as exc:
@@ -219,6 +240,9 @@ class OmniBackend:
         self.model, self.processor = mlx_vlm.load(model_ref)
         self.config = getattr(self.model, "config", None)
         self.name = model_ref
+        self._kv_kwargs: dict = {}
+        if kv_bits:
+            self._kv_kwargs = {"kv_bits": kv_bits, "kv_group_size": kv_group_size}
         self._lock = threading.Lock()
 
     def chat(self, req: UnifiedRequest) -> Iterator[Chunk]:
@@ -258,6 +282,7 @@ class OmniBackend:
                 kwargs["top_p"] = req.top_p
             if req.top_k is not None:
                 kwargs["top_k"] = req.top_k
+            kwargs.update(self._kv_kwargs)
 
             with self._lock:
                 yield from self._generate(prompt, images, audios, req, kwargs)
@@ -327,14 +352,20 @@ def _peek_config(model_ref: str) -> dict:
         return json.load(f)
 
 
-def load_backend(model_ref: str, preferred: str = "auto"):
+def load_backend(
+    model_ref: str,
+    preferred: str = "auto",
+    draft_model: Optional[str] = None,
+    kv_bits: Optional[int] = None,
+    kv_group_size: int = 64,
+):
     """Load a backend: 'text', 'omni', or 'auto' (sniffs config.json)."""
     if preferred == "text":
-        return TextBackend(model_ref)
+        return TextBackend(model_ref, draft_model_ref=draft_model, kv_bits=kv_bits, kv_group_size=kv_group_size)
     if preferred == "omni":
-        return OmniBackend(model_ref)
+        return OmniBackend(model_ref, kv_bits=kv_bits, kv_group_size=kv_group_size)
     config = _peek_config(model_ref)
     wants_omni = any(key in config for key in _OMNI_CONFIG_KEYS)
     if wants_omni:
-        return OmniBackend(model_ref)
-    return TextBackend(model_ref)
+        return OmniBackend(model_ref, kv_bits=kv_bits, kv_group_size=kv_group_size)
+    return TextBackend(model_ref, draft_model_ref=draft_model, kv_bits=kv_bits, kv_group_size=kv_group_size)

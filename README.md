@@ -41,6 +41,20 @@ Options: `--host` (default `127.0.0.1`), `--port` (default `8000`), `--backend a
 (auto sniffs `config.json` for vision/audio sections), `--api-key` to require `Authorization: Bearer …`
 or `x-api-key`.
 
+Performance flags:
+
+- `--draft-model <repo>` — speculative decoding for the text backend: pass a smaller
+  model that shares the main model's tokenizer (e.g. serve
+  `Qwen2.5-7B-Instruct-4bit` with `--draft-model mlx-community/Qwen2.5-0.5B-Instruct-4bit`).
+  While a draft model is set, the cross-turn prompt cache is bypassed (each turn re-prefills).
+- `--kv-bits <n>` (`--kv-group-size`, default 64) — quantize the KV cache to `n` bits to cut
+  memory on long contexts (mlx-lm quantizes entries beyond its first-5000-token window;
+  same kwargs are honored by mlx-vlm for the omni backend).
+
+Conversations continuing a previous turn reuse its KV cache: only the new suffix is
+prefilled (text backend; the divergence or edit of resent history falls back to a full
+re-prefill, so correctness never depends on the cache).
+
 ## API
 
 | Endpoint | Format |

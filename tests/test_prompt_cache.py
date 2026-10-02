@@ -42,8 +42,8 @@ class FakeMlxLm:
     def __init__(self):
         self.calls = []
 
-    def stream_generate(self, model, tokenizer, prompt, max_tokens, sampler, prompt_cache):
-        self.calls.append({"prompt": list(prompt), "cache": prompt_cache})
+    def stream_generate(self, model, tokenizer, prompt, **kwargs):
+        self.calls.append({"prompt": list(prompt), **kwargs})
         for ch in "abc":
             yield SimpleNamespace(text=ch, token=ord(ch), prompt_tokens=len(prompt), finish_reason=None)
         yield SimpleNamespace(text="", token=ord("<"), prompt_tokens=len(prompt), finish_reason="stop")
@@ -54,6 +54,8 @@ def make_backend():
     backend._mlx_lm = FakeMlxLm()
     backend._make_sampler = lambda **kw: None
     backend._make_cache = lambda model, max_kv_size=None: [f"cache-{id(object())}"]
+    backend._draft_model = None
+    backend._kv_kwargs = {}
     backend.model = None
     backend.tokenizer = FakeTokenizer()
     backend.name = "fake"
@@ -74,7 +76,7 @@ class PromptCacheTest(unittest.TestCase):
         call = backend._mlx_lm.calls[0]
         cached_tokens, cache = backend._cached
         self.assertEqual(call["prompt"], cached_tokens[: len(call["prompt"])])
-        self.assertIs(call["cache"], cache)
+        self.assertIs(call["prompt_cache"], cache)
         # usage reports the full prompt count; generated ids stored for the next turn
         self.assertEqual(chunks[-1].prompt_tokens, len(cached_tokens) - 4)
         self.assertEqual(cached_tokens[-4:], [ord(c) for c in "abc<"])
@@ -88,7 +90,7 @@ class PromptCacheTest(unittest.TestCase):
         second = backend._mlx_lm.calls[1]
         # everything after the cached prompt+reply: 'u:q<a>'
         self.assertEqual(second["prompt"], [ord(c) for c in "u:q<a>"])
-        self.assertIs(second["cache"], first_cache)
+        self.assertIs(second["prompt_cache"], first_cache)
         # usage still reports the full second-turn prompt length
         full_render = "u:hi<a>abc<u:q<a>"
         self.assertEqual(chunks[-1].prompt_tokens, len(full_render))
@@ -100,7 +102,7 @@ class PromptCacheTest(unittest.TestCase):
         drain(backend.chat(UnifiedRequest(model="", messages=[user("other")])))
         second = backend._mlx_lm.calls[1]
         self.assertEqual(second["prompt"], [ord(c) for c in "u:other<a>"])
-        self.assertIsNot(second["cache"], first_cache)
+        self.assertIsNot(second["prompt_cache"], first_cache)
 
     def test_identical_prompt_re_prefills(self):
         backend = make_backend()
@@ -109,7 +111,7 @@ class PromptCacheTest(unittest.TestCase):
         drain(backend.chat(UnifiedRequest(model="", messages=[user("hi")])))
         # the suffix would be empty (prompt equals the cached prefix) — re-prefill instead
         self.assertEqual(backend._mlx_lm.calls[1]["prompt"], backend._mlx_lm.calls[0]["prompt"])
-        self.assertIsNot(backend._mlx_lm.calls[1]["cache"], first_cache)
+        self.assertIsNot(backend._mlx_lm.calls[1]["prompt_cache"], first_cache)
 
 
 if __name__ == "__main__":
