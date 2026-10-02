@@ -46,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "tts":
+        return _tts(argv[1:])
     args = build_parser().parse_args(argv)
 
     import uvicorn
@@ -67,6 +70,49 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"serving {backend.name} ({type(backend).__name__}) on http://{args.host}:{args.port}", file=sys.stderr)
     uvicorn.run(create_app(backend, api_key=args.api_key), host=args.host, port=args.port, log_level=args.log_level)
+    return 0
+
+
+def _tts(argv: list[str]) -> int:
+    """`vllm-omni-mlx tts --voice vivian --text "..." --out out.wav` (#15)."""
+    parser = argparse.ArgumentParser(prog="vllm-omni-mlx tts", description="Synthesize speech to a WAV file.")
+    parser.add_argument("--model", default=None, help="TTS model repo or path (default: the [tts] default)")
+    parser.add_argument("--voice", default=None, help="preset CustomVoice speaker (e.g. vivian, ryan)")
+    parser.add_argument("--language", default=None, help="spoken language hint (default: auto)")
+    parser.add_argument("--instruct", default=None, help="emotion/style instruction")
+    parser.add_argument("--text", required=True, help="text to synthesize")
+    parser.add_argument("--out", required=True, help="output WAV path")
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--max-tokens", type=int, default=None)
+    args = parser.parse_args(argv)
+
+    import time
+
+    from .tts.config import TTSConfig, load_tts_model
+    from .tts.generate import synthesize, wav_bytes
+
+    config = TTSConfig()
+    if args.model:
+        config = TTSConfig(model_ref=args.model)
+    overrides = {k: getattr(args, k) for k in ("voice", "language", "instruct", "temperature", "seed", "max_tokens")}
+    overrides = {("speaker" if k == "voice" else k): v for k, v in overrides.items()}
+    try:
+        model = load_tts_model(config)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"error: failed to load TTS model '{config.model_ref}': {exc}", file=sys.stderr)
+        return 1
+
+    start = time.perf_counter()
+    data = wav_bytes(synthesize(model, config, args.text, **overrides))
+    elapsed = time.perf_counter() - start
+    if not data:
+        print("error: model produced no audio", file=sys.stderr)
+        return 1
+    with open(args.out, "wb") as f:
+        f.write(data)
+    frames = (len(data) - 44) // 2
+    print(f"wrote {args.out}: {frames / 24000:.2f}s of audio in {elapsed:.2f}s (RTF {elapsed / (frames / 24000):.2f})")
     return 0
 
 
