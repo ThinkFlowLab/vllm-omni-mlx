@@ -93,11 +93,11 @@ mlx-lm 0.32 and mlx-vlm 0.7.
 
 ```sh
 # omni-modality server: Qwen3-Omni chat + speech synthesis in one process
-vllm-mlx serve mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit \
+vllm-omni-mlx serve mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit \
     --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit      # needs [omni] + [tts]
 
 # speech-only server
-vllm-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni
+vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni
 ```
 
 Qwen3-Omni serves text-out chat today (speech-out chat is in progress); the 30B-A3B
@@ -136,7 +136,7 @@ Speech synthesis quickstart:
 
 ```sh
 pip install 'vllm-omni-mlx[tts]'
-vllm-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
+vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
 curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
     -d '{"input": "Hello from vllm omni em el ex.", "voice": "vivian"}' \
     http://127.0.0.1:8000/v1/audio/speech -o speech.wav
@@ -152,7 +152,7 @@ for chunk cadence, and `streaming_initial_interval` (default 0.2 s) emits the
 first chunk as soon as that much audio exists (quantized to a power-of-two
 frame bucket, so compiled decode shapes stay bounded) — measured time to
 first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
-`vllm-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
+`vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
 OpenAI-style request:
 

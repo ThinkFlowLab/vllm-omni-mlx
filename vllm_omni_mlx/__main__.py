@@ -1,7 +1,7 @@
 """CLI, shaped like upstream vllm-omni's `vllm serve <model> --omni`.
 
-    vllm-mlx serve mlx-community/Qwen2.5-0.5B-Instruct-4bit
-    vllm-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni
+    vllm-omni-mlx serve mlx-community/Qwen2.5-0.5B-Instruct-4bit
+    vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sys
 
 def build_serve_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="vllm-mlx serve",
+        prog="vllm-omni-mlx serve",
         description="Serve a model on the OpenAI- and Anthropic-compatible API.",
         add_help=False,
     )
@@ -58,8 +58,8 @@ def build_serve_parser() -> argparse.ArgumentParser:
 
 
 def build_tts_parser() -> argparse.ArgumentParser:
-    """`vllm-mlx tts --voice vivian --text "..." --out out.wav` (#15)."""
-    parser = argparse.ArgumentParser(prog="vllm-mlx tts", description="Synthesize speech to a WAV file.", add_help=False)
+    """`vllm-omni-mlx tts --voice vivian --text "..." --out out.wav` (#15)."""
+    parser = argparse.ArgumentParser(prog="vllm-omni-mlx tts", description="Synthesize speech to a WAV file.", add_help=False)
     parser.add_argument("--model", default=None, help="TTS model repo or path (default: the [tts] default)")
     parser.add_argument("--voice", default=None, help="preset CustomVoice speaker (e.g. vivian, ryan)")
     parser.add_argument("--language", default=None, help="spoken language hint (default: auto)")
@@ -74,7 +74,7 @@ def build_tts_parser() -> argparse.ArgumentParser:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="vllm-mlx",
+        prog="vllm-omni-mlx",
         description="Lightweight OpenAI- and Anthropic-compatible omni-modality server for Apple Silicon.",
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="{serve,tts}")

@@ -19,9 +19,8 @@ omni = ["mlx-vlm>=0.7"]
 tts = ["mlx-audio>=0.5.7,<0.6"]
 
 [project.scripts]
-# distribution name stays vllm-omni-mlx; only the command follows upstream's
-# `vllm serve <model> --omni` shape (PyPI's vllm-mlx package is unrelated)
-vllm-mlx = "vllm_omni_mlx.__main__:main"
+# serve/tts subcommands, upstream vllm-omni's `vllm serve <model> --omni` shape
+vllm-omni-mlx = "vllm_omni_mlx.__main__:main"
 
 [tool.setuptools]
 packages = ["vllm_omni_mlx", "vllm_omni_mlx.tts"]
