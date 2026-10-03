@@ -31,7 +31,7 @@ from .code_predictor import CodePredictor
 from .config import TTSConfig
 from .prompt_embeds import PromptEmbeds
 from .talker import Talker
-from .variants import ensure_served
+from .variants import VOICE_DESIGN, model_variant, require_served
 
 FRAME_RATE = 12.5  # codec frames per second of audio (12 Hz tokenizer)
 SAMPLES_PER_FRAME = 1920  # 24000 Hz / 12.5
@@ -61,11 +61,11 @@ def _pad_target(remainder: int, initial_frames: int, chunk_frames: int) -> int:
     return initial_frames if remainder <= initial_frames else chunk_frames
 
 
-def generate_custom_voice_frames(
+def generate_frames(
     model: Any,
     *,
     text: str,
-    speaker: str,
+    speaker: str | None,
     language: str = "auto",
     instruct: str | None = None,
     temperature: float = 0.9,
@@ -76,9 +76,12 @@ def generate_custom_voice_frames(
     initial_frames: int = 2,
     chunk_frames: int = 6,
 ) -> Iterator[mx.array]:
-    """Yield audio chunks ([samples] float, 24 kHz mono) for CustomVoice
-    synthesis, decoding the first ``initial_frames`` frames as soon as they
-    exist and every ``chunk_frames`` frames thereafter."""
+    """Yield audio chunks ([samples] float, 24 kHz mono) — CustomVoice with
+    a preset ``speaker``, or VoiceDesign speakerless with the voice
+    description in ``instruct`` (the prompt is the same layout minus the
+    spk row; the AR loop and chunk scheduling are shared) — decoding the
+    first ``initial_frames`` frames as soon as they exist and every
+    ``chunk_frames`` frames thereafter."""
     talker = Talker(model.talker)
     predictor = CodePredictor(model.talker)
     layout = PromptEmbeds(model).build(text, speaker, language, instruct)
@@ -182,16 +185,25 @@ def generate_custom_voice_frames(
 
 def synthesize_stream(model: Any, config: TTSConfig, text: str, **overrides) -> Iterator[mx.array]:
     """Config-driven wrapper mirroring generate.synthesize's contract, on the
-    fast-path loop. `seed` reseeds MLX's RNG for reproducibility; overrides
-    follow TTSConfig.with_overrides semantics."""
-    ensure_served(model)
+    fast-path loop, routing by checkpoint type (#52): CustomVoice passes the
+    preset speaker, VoiceDesign passes ``speaker=None`` with the voice
+    description in ``instruct`` (required there). `seed` reseeds MLX's RNG
+    for reproducibility; overrides follow TTSConfig.with_overrides semantics."""
+    variant = model_variant(model)
+    require_served(variant, path="design" if variant == VOICE_DESIGN else "preset")
     cfg = config.with_overrides(**overrides)
+    if variant == VOICE_DESIGN and not (cfg.instruct or "").strip():
+        raise ValueError(
+            "VoiceDesign synthesis needs `instruct` — a voice description "
+            "like 'A cheerful young female voice with high pitch and "
+            "energetic tone' (#46)"
+        )
     if overrides.get("seed") is not None:
         mx.random.seed(int(overrides["seed"]))
-    yield from generate_custom_voice_frames(
+    yield from generate_frames(
         model,
         text=text,
-        speaker=cfg.speaker,
+        speaker=cfg.speaker if variant != VOICE_DESIGN else None,
         language=cfg.language,
         instruct=cfg.instruct,
         temperature=cfg.temperature,

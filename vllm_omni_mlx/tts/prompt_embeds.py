@@ -1,4 +1,5 @@
-"""CustomVoice prompt-embeds seam (M1.5, #14) — adapting mlx-audio (MIT).
+"""Dual-track prompt-embeds seam (M1.5 #14, speakerless in #52) — adapting
+mlx-audio (MIT).
 
 The dual-track prompt layout (the piece where a wrong layout silently
 produces garbage audio) is implemented by mlx-audio's
@@ -13,7 +14,10 @@ produces garbage audio) is implemented by mlx-audio's
     trailing     text_embed[4:-5] + tts_eos     the returned tts_pad embed)
 
 CustomVoice speakers resolve through the checkpoint's ``spk_id`` map (no
-ECAPA / ref-audio — that is M2). All special ids come from config.
+ECAPA / ref-audio — that is M2). VoiceDesign passes ``speaker=None`` — the
+spk row is simply absent and the voice description rides ``instruct``
+(#52; mlx-audio's own ``generate_voice_design`` does exactly this). All
+special ids come from config.
 """
 
 from __future__ import annotations
@@ -50,7 +54,9 @@ class PromptLayout:
 
 
 class PromptEmbeds:
-    """Build the CustomVoice dual-track prompt for a loaded mlx-audio model."""
+    """Build the dual-track prompt for a loaded mlx-audio model — CustomVoice
+    (``speaker`` set) or VoiceDesign (``speaker=None``, description in
+    ``instruct``)."""
 
     def __init__(self, model: Any):
         self._model = model
@@ -71,11 +77,12 @@ class PromptEmbeds:
             known = ", ".join(sorted(self.speakers))
             raise ValueError(f"unknown speaker '{speaker}'; available: {known}") from None
 
-    def build(self, text: str, speaker: str, language: str = "auto", instruct: Optional[str] = None) -> PromptLayout:
+    def build(self, text: str, speaker: Optional[str], language: str = "auto", instruct: Optional[str] = None) -> PromptLayout:
         auto = language.lower() == "auto" or not self._config.codec_language_id
-        # nothink path (Auto): 3 think rows + spk + [pad, bos]; explicit
-        # language adds one row (think id + language id)
-        codec_prefix_len = (3 if auto else 4) + 1 + 2
+        # nothink path (Auto): 3 think rows + [pad, bos]; explicit language
+        # adds one row (think id + language id); a speaker adds its embed row
+        # (absent for VoiceDesign — qwen3_tts.py:441 skips the splice)
+        codec_prefix_len = (3 if auto else 4) + (1 if speaker else 0) + 2
         input_embeds, trailing, tts_pad = self._model._prepare_generation_inputs(
             text=text, language=language, speaker=speaker, instruct=instruct
         )
