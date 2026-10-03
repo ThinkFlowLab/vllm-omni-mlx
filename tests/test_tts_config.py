@@ -3,6 +3,12 @@ checkpoint is cached locally — the full-checkpoint load that validates
 mlx-audio's tensor mapping end to end."""
 
 import sys
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
 from unittest import mock
 

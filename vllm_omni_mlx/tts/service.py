@@ -18,7 +18,7 @@ from .config import TTSConfig
 from .generate import MAX_REF_SECONDS, decode_ref_audio, synthesize, synthesize_clone, wav_bytes
 from .prompt_embeds import PromptEmbeds
 from .stream_loop import synthesize_stream
-from .variants import CUSTOM_VOICE, model_variant, require_served
+from .variants import CUSTOM_VOICE, SMALL_SIZE, model_size, model_variant, require_served
 
 # stream-path chunk default (#40's measured knee; the buffered path keeps
 # TTSConfig.streaming_interval — chunking is irrelevant when joining)
@@ -36,6 +36,7 @@ class TTSService:
         self._model = model
         self.config = config or TTSConfig()
         self._variant = model_variant(model)  # unknown types fail at boot
+        self._model_size = model_size(model)
         self._embeds = PromptEmbeds(model)
         self._lock = threading.Lock()
 
@@ -159,6 +160,14 @@ class TTSService:
         speaker = (voice or self.config.speaker).lower()
         if speaker not in self.voices:
             raise ValueError(f"voice '{voice}' is not one of the preset voices")
+        if instructions and self._model_size == SMALL_SIZE:
+            # mlx-audio's own 0.6B instruct guard is dead code; rejecting
+            # here keeps the behavior deterministic instead of hoping the
+            # small model handles a prompt it wasn't trained for
+            raise ValueError(
+                "instructions (emotion/style) need a 1.7B CustomVoice model; "
+                "the 0.6B model was not trained for them"
+            )
         overrides = {"speaker": speaker}
         if instructions:
             overrides["instruct"] = instructions

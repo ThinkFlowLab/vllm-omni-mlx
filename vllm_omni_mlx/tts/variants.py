@@ -30,6 +30,12 @@ BASE = "base"
 CUSTOM_VOICE = "custom_voice"
 VOICE_DESIGN = "voice_design"
 
+#: ``tts_model_size`` tags the family ships ("0b6"/"1b7"); the small
+#: CustomVoice model was not trained for ``instruct`` — mlx-audio's own
+#: 0.6B guard is dead code (tests ``!= custom_voice`` inside the
+#: ``== custom_voice`` branch), so the rejection has to live here
+SMALL_SIZE = "0b6"
+
 #: every ``tts_model_type`` mlx-audio's qwen3_tts knows
 KNOWN = (BASE, CUSTOM_VOICE, VOICE_DESIGN)
 
@@ -83,6 +89,13 @@ def require_served(variant: str, path: str = "preset") -> None:
     if variant in SERVED_BY_PATH[path]:
         return
     raise ValueError(_TRACKING.get((variant, path), f"Qwen3-TTS '{variant}' models are not served on the {path} path yet"))
+
+
+def model_size(model: Any) -> str:
+    """The checkpoint's ``tts_model_size`` tag ("" when absent — older or
+    novel checkpoints simply aren't small)."""
+    raw = getattr(model.config, "tts_model_size", None)
+    return raw.strip().lower() if isinstance(raw, str) else ""
 
 
 def ensure_served(model: Any, path: str = "preset") -> str:

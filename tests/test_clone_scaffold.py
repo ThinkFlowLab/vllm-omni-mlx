@@ -5,6 +5,12 @@ Base checkpoint is cached and skips elsewhere (CI)."""
 
 import base64
 import io
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
 import wave
 from types import SimpleNamespace

@@ -173,6 +173,11 @@ checkpoints ignore cloning — send the form matching your checkpoint.
 Buffered only for now; streaming cloning is tracked in
 [#50](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/50).
 
+The 0.6B CustomVoice variant
+(`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit`) serves the same
+preset voices and endpoint; `instructions` are rejected with a 400 there —
+emotion/style prompts are a 1.7B capability.
+
 OpenAI-style request:
 
 ```sh
