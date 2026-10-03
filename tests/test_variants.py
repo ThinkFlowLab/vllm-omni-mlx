@@ -1,6 +1,7 @@
-"""Variant dispatch scaffold (#47): the tts_model_type probe, the
-served-guard on both generation entries, and per-type service validation —
-all against stub models, no weights needed."""
+"""Variant dispatch scaffold (#47, extended per-path in #49): the
+tts_model_type probe, the served-guard per generation path (preset vs
+clone), and per-type service validation — all against stub models, no
+weights needed."""
 
 import unittest
 from types import SimpleNamespace
@@ -52,9 +53,21 @@ class EnsureServedTest(unittest.TestCase):
         model = stub_model("custom_voice", PRESETS)
         self.assertEqual(variants.ensure_served(model), "custom_voice")
 
-    def test_base_names_cloning_issues(self):
-        with self.assertRaisesRegex(ValueError, r"#49 buffered, #50 streaming"):
+    def test_base_preset_path_points_at_cloning_shape(self):
+        with self.assertRaisesRegex(ValueError, "ref_audio"):
             variants.ensure_served(stub_model("base"))
+
+    def test_base_clone_path_passes(self):
+        model = stub_model("base")
+        self.assertEqual(variants.ensure_served(model, path="clone"), "base")
+
+    def test_custom_voice_clone_path_needs_base(self):
+        with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
+            variants.ensure_served(stub_model("custom_voice", PRESETS), path="clone")
+
+    def test_unknown_path_raises(self):
+        with self.assertRaisesRegex(ValueError, "unknown generation path"):
+            variants.require_served("base", path="bogus")
 
     def test_voice_design_names_its_issue(self):
         with self.assertRaisesRegex(ValueError, "#46"):
@@ -67,12 +80,20 @@ class GenerationEntryGuardTest(unittest.TestCase):
     with AttributeError, not ValueError."""
 
     def test_synthesize_rejects_base(self):
-        with self.assertRaisesRegex(ValueError, "not supported by this build"):
+        with self.assertRaisesRegex(ValueError, "no preset voices"):
             list(synthesize(stub_model("base"), TTSConfig(), "hello"))
 
     def test_synthesize_stream_rejects_voice_design(self):
-        with self.assertRaisesRegex(ValueError, "not supported by this build"):
+        with self.assertRaisesRegex(ValueError, "#46"):
             list(synthesize_stream(stub_model("voice_design"), TTSConfig(), "hello"))
+
+    def test_synthesize_clone_rejects_custom_voice(self):
+        import mlx.core as mx
+
+        from vllm_omni_mlx.tts.generate import synthesize_clone
+
+        with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
+            list(synthesize_clone(stub_model("custom_voice", PRESETS), TTSConfig(), "hi", mx.zeros(24000), "ref"))
 
 
 class ServicePerTypeTest(unittest.TestCase):
@@ -80,10 +101,10 @@ class ServicePerTypeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown TTS model type"):
             TTSService(stub_model("turbo", PRESETS))
 
-    def test_base_serves_empty_voices_and_rejects_speech(self):
+    def test_base_serves_empty_voices_and_rejects_preset_speech(self):
         service = TTSService(stub_model("base"))
         self.assertEqual(service.voices, [])
-        with self.assertRaisesRegex(ValueError, "#49 buffered, #50 streaming"):
+        with self.assertRaisesRegex(ValueError, "ref_audio"):
             service.speech_bytes("hello")
 
     def test_voice_design_rejects_speech_even_with_instructions(self):
