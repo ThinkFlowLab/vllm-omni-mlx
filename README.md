@@ -33,13 +33,14 @@ mlx-lm 0.32 and mlx-vlm 0.7.
 ## Run
 
 ```sh
-vllm-omni-mlx --model mlx-community/Qwen2.5-7B-Instruct-4bit            # text LLM
-vllm-omni-mlx --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit         # omni-modality (needs [omni])
+vllm-mlx serve mlx-community/Qwen2.5-7B-Instruct-4bit            # text LLM
+vllm-mlx serve mlx-community/Qwen2.5-VL-7B-Instruct-4bit --omni  # omni-modality (needs [omni])
 ```
 
 Options: `--host` (default `127.0.0.1`), `--port` (default `8000`), `--backend auto|text|omni`
-(auto sniffs `config.json` for vision/audio sections), `--api-key` to require `Authorization: Bearer …`
-or `x-api-key`.
+(auto sniffs `config.json` for vision/audio sections), `--omni` (serve the model omni-modally:
+a Qwen3-TTS checkpoint serves `/v1/audio/*`, anything else forces the omni backend),
+`--api-key` to require `Authorization: Bearer …` or `x-api-key`.
 
 Performance flags:
 
@@ -61,7 +62,7 @@ re-prefill, so correctness never depends on the cache).
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI (streaming via SSE, `stop`, multimodal `image_url` / `input_audio` content parts) |
 | `POST /v1/messages` | Anthropic (streaming via SSE, `stop_sequences`, base64/URL image blocks) |
-| `POST /v1/audio/speech` | OpenAI audio (`wav` 24 kHz mono / raw `pcm`; needs `--tts-model`, `[tts]` extra) |
+| `POST /v1/audio/speech` | OpenAI audio (`wav` 24 kHz mono / raw `pcm`; needs a TTS model via `--omni` or `--tts-model`, `[tts]` extra) |
 | `GET /v1/audio/voices` | preset CustomVoice speakers for the loaded TTS model |
 | `GET /v1/models` | OpenAI model list |
 | `GET /health` | liveness |
@@ -70,7 +71,7 @@ Speech synthesis quickstart:
 
 ```sh
 pip install 'vllm-omni-mlx[tts]'
-vllm-omni-mlx --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --api-key demo
+vllm-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
 curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
     -d '{"input": "Hello from vllm omni em el ex.", "voice": "vivian"}' \
     http://127.0.0.1:8000/v1/audio/speech -o speech.wav
@@ -86,7 +87,7 @@ for chunk cadence, and `streaming_initial_interval` (default 0.2 s) emits the
 first chunk as soon as that much audio exists (quantized to a power-of-two
 frame bucket, so compiled decode shapes stay bounded) — measured time to
 first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
-`vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
+`vllm-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
 OpenAI-style request:
 

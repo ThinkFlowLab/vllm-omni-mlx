@@ -2103,15 +2103,19 @@ dependencies = [
 omni = [
     { name = "mlx-vlm" },
 ]
+tts = [
+    { name = "mlx-audio" },
+]
 
 [package.metadata]
 requires-dist = [
+    { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.5.7,<0.6" },
     { name = "mlx-lm", specifier = ">=0.28" },
     { name = "mlx-vlm", marker = "extra == 'omni'", specifier = ">=0.7" },
     { name = "starlette", specifier = ">=0.37" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["omni"]
+provides-extras = ["omni", "tts"]
 
 [[package]]
 name = "websockets"

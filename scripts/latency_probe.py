@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TTFT / inter-token latency probe against a running vllm-omni-mlx server.
+"""TTFT / inter-token latency probe against a running vllm-mlx server.
 
 Streams from /v1/chat/completions and measures, per turn: time-to-first-token
 (TTFT), inter-token latency (p50 / p95 / max), tokens/s, and total time.

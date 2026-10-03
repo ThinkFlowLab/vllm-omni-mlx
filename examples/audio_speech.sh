@@ -1,6 +1,6 @@
 #!/bin/sh
 # /v1/audio/speech round trip (#16): start the server with a TTS model first —
-#   vllm-omni-mlx --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --api-key demo
+#   vllm-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
 # then run this script.
 
 BASE="${BASE:-http://127.0.0.1:8000}"

@@ -2,7 +2,7 @@
 """Python client for POST /v1/audio/speech (stdlib only, #16).
 
 Start the server first:
-    vllm-omni-mlx --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --api-key demo
+    vllm-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
 """
 
 import argparse
