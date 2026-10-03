@@ -15,6 +15,17 @@ from vllm_omni_mlx.tts.config import TTSConfig
 from vllm_omni_mlx.tts.generate import MAX_REF_SECONDS, decode_ref_audio, synthesize_clone
 from vllm_omni_mlx.tts.service import TTSService
 
+try:  # decode_ref_audio routes through mlx-audio, which the core install omits
+    import mlx_audio  # noqa: F401 — availability probe only; decode is per-test
+
+    HAS_MLX_AUDIO = True
+except ImportError:
+    HAS_MLX_AUDIO = False
+
+#: tests that decode a reference clip need the [tts] extra; the rest cover
+#: validation that rejects before decoding and run everywhere
+requires_mlx_audio = unittest.skipUnless(HAS_MLX_AUDIO, "needs the [tts] extra (mlx-audio)")
+
 
 def wav_bytes_tone(seconds: float, sample_rate: int = 8000, freq: float = 220.0) -> bytes:
     """A real 16-bit mono WAV sine tone — exercises the actual decoder."""
@@ -49,6 +60,7 @@ def stub_model(tts_model_type):
 
 
 class DecodeRefAudioTest(unittest.TestCase):
+    @requires_mlx_audio
     def test_decodes_and_resamples_to_24k_mono(self):
         # 1 s of 8 kHz tone → ~24000 samples at 24 kHz
         audio = decode_ref_audio(b64(wav_bytes_tone(1.0, sample_rate=8000)))
@@ -63,6 +75,7 @@ class DecodeRefAudioTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "could not be decoded"):
             decode_ref_audio(b64(b"just some text"))
 
+    @requires_mlx_audio
     def test_zero_sample_audio_rejected(self):
         with self.assertRaisesRegex(ValueError, "zero samples"):
             decode_ref_audio(b64(wav_bytes_tone(0.0)))
@@ -85,11 +98,13 @@ class CloneVoiceObjectTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ref_audio and ref_text, got \\['style'\\]"):
             self.base_service().speech_bytes("hello", voice=voice)
 
+    @requires_mlx_audio
     def test_clip_shorter_than_half_second_rejected(self):
         voice = {"ref_audio": b64(wav_bytes_tone(0.2)), "ref_text": "too short"}
         with self.assertRaisesRegex(ValueError, "at least 0.5s"):
             self.base_service().speech_bytes("hello", voice=voice)
 
+    @requires_mlx_audio
     def test_clip_over_cap_rejected(self):
         voice = {"ref_audio": b64(wav_bytes_tone(MAX_REF_SECONDS + 1.5)), "ref_text": "too long"}
         with self.assertRaisesRegex(ValueError, "cap is 30s"):
@@ -113,6 +128,7 @@ class CloneVoiceObjectTest(unittest.TestCase):
 
 
 class SynthesizeCloneGuardTest(unittest.TestCase):
+    @requires_mlx_audio
     def test_cap_enforced_at_entry_too(self):
         # decode a >cap clip and pass it straight to the generation entry
         audio = decode_ref_audio(b64(wav_bytes_tone(MAX_REF_SECONDS + 1.5)))
@@ -146,6 +162,7 @@ class CloneEndpointTest(unittest.TestCase):
         self.client = TestClient(create_app(tts_service=service, api_key="k1"))
         self.voice = {"ref_audio": b64(wav_bytes_tone(2.0)), "ref_text": "what it says"}
 
+    @requires_mlx_audio
     def test_clone_request_round_trips_through_http(self):
         response = self.client.post(
             "/v1/audio/speech",
