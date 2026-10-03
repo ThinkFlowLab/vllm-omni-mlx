@@ -47,13 +47,14 @@ Like vLLM-Omni, vllm-omni-mlx targets omni-modality serving across the speech st
 
 - **Omni-modality models** (Qwen3-Omni — text, image, and audio in; text and speech out)
 - **ASR models** (e.g. Whisper, Parakeet, Qwen3-ASR, Voxtral, SenseVoice)
-- **TTS models** (Qwen3-TTS CustomVoice)
+- **TTS models** (Qwen3-TTS CustomVoice, VoiceDesign)
 
 | Modality | Models | Example HF models | Engine | Status |
 | --- | --- | --- | --- | --- |
 | Text / image / audio in → text + speech out | Qwen3-Omni | `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` | `mlx-vlm` (`[omni]` extra) | ⚠️ via mlx-vlm — speech-out chat not plumbed yet, not verified here <sup>1</sup> |
 | Speech in → text out (ASR) | Whisper, Parakeet, Qwen3-ASR, Qwen2-Audio, Voxtral, SenseVoice, Moonshine, … <sup>2</sup> | `mlx-community/whisper-large-v3-turbo` | `mlx-audio` (`[tts]` extra) | 🚧 planned — engine support via mlx-audio stt, transcription endpoint not built yet |
 | Text → speech out | Qwen3-TTS-12Hz-1.7B-CustomVoice | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end (4-bit) <sup>3</sup> |
+| Text → speech out (described voice) | Qwen3-TTS-12Hz-1.7B-VoiceDesign | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | `mlx-audio` (`[tts]` extra) | ✅ buffered path verified (4-bit, weight-gated tests); streaming is #52 <sup>3</sup> |
 
 <sup>1</sup> mlx-vlm 0.7 ships the full Qwen3-Omni thinker/talker implementation; this server currently
 consumes its text output only — speech-out chat and video input are future work. The 30B-A3B MoE
@@ -127,7 +128,7 @@ re-prefill, so correctness never depends on the cache).
 | `POST /v1/chat/completions` | OpenAI (streaming via SSE, `stop`, multimodal `image_url` / `input_audio` content parts) |
 | `POST /v1/messages` | Anthropic (streaming via SSE, `stop_sequences`, base64/URL image blocks) |
 | `POST /v1/audio/speech` | OpenAI audio (`wav` 24 kHz mono / raw `pcm`; needs `--tts-model`, `[tts]` extra) |
-| `GET /v1/audio/voices` | preset CustomVoice speakers for the loaded TTS model |
+| `GET /v1/audio/voices` | preset CustomVoice speakers for the loaded TTS model (empty on Base/VoiceDesign checkpoints) |
 | `GET /v1/models` | OpenAI model list |
 | `GET /health` | liveness |
 
@@ -143,7 +144,13 @@ curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
 
 `voice` picks a preset speaker (`GET /v1/audio/voices` lists them), `instructions`
 add an emotion/style prompt, `language` forces a language (default auto);
-`speed` must be 1.0 for now. Streaming: pass `"stream": true` for chunked raw
+`speed` must be 1.0 for now. On a VoiceDesign checkpoint
+(`mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit`) the same `instructions`
+field **is the voice** — a description like "A cheerful young female voice with
+high pitch and energetic tone" (required; `voice` is rejected — presets don't
+exist there). The field's meaning is set by the loaded checkpoint, mirroring
+mlx-audio's own mapping; VoiceDesign serving is buffered for now (streaming is
+#52). Streaming: pass `"stream": true` for chunked raw
 PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
 WAV — first audio typically lands in under 0.5 s instead of after the full
 generation; `streaming_interval` (default 0.5 s) trades first-audio latency

@@ -69,8 +69,8 @@ class EnsureServedTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown generation path"):
             variants.require_served("base", path="bogus")
 
-    def test_voice_design_names_its_issue(self):
-        with self.assertRaisesRegex(ValueError, "#46"):
+    def test_voice_design_preset_path_points_at_instructions(self):
+        with self.assertRaisesRegex(ValueError, "instructions"):
             variants.ensure_served(stub_model("voice_design"))
 
 
@@ -84,7 +84,7 @@ class GenerationEntryGuardTest(unittest.TestCase):
             list(synthesize(stub_model("base"), TTSConfig(), "hello"))
 
     def test_synthesize_stream_rejects_voice_design(self):
-        with self.assertRaisesRegex(ValueError, "#46"):
+        with self.assertRaisesRegex(ValueError, "#52"):
             list(synthesize_stream(stub_model("voice_design"), TTSConfig(), "hello"))
 
     def test_synthesize_clone_rejects_custom_voice(self):
@@ -109,7 +109,7 @@ class ServicePerTypeTest(unittest.TestCase):
 
     def test_voice_design_rejects_speech_even_with_instructions(self):
         service = TTSService(stub_model("voice_design"))
-        with self.assertRaisesRegex(ValueError, "#46"):
+        with self.assertRaisesRegex(ValueError, "#52"):
             service.speech_stream("hello", instructions="a cheerful young voice")
 
     def test_custom_voice_validation_unchanged(self):

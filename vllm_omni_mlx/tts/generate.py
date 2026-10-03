@@ -10,6 +10,9 @@ yielding 24 kHz mono audio chunks. EOS is the checkpoint's
 
 #49 adds the Base voice-cloning entry (:func:`synthesize_clone`) on
 mlx-audio's ICL path — buffered only; the streaming clone loop is #50.
+#51 adds the VoiceDesign entry (:func:`synthesize_design`) on
+``generate_voice_design`` — the description rides ``instruct``; buffered
+only, the streaming design loop is #52.
 """
 
 from __future__ import annotations
@@ -47,6 +50,41 @@ def synthesize(model: Any, config: TTSConfig, text: str, **overrides) -> Iterato
         speaker=cfg.speaker,
         language=cfg.language,
         instruct=cfg.instruct,
+        temperature=cfg.temperature,
+        top_k=cfg.top_k,
+        top_p=cfg.top_p,
+        repetition_penalty=cfg.repetition_penalty,
+        max_tokens=cfg.max_tokens,
+        stream=stream,
+        streaming_interval=cfg.streaming_interval,
+    ):
+        if result.audio is not None and result.audio.size:
+            yield result.audio
+
+
+def synthesize_design(model: Any, config: TTSConfig, text: str, **overrides) -> Iterator[mx.array]:
+    """Yield audio chunks (mx.array, 24 kHz mono float) for `text`, in the
+    voice described by ``instruct`` — VoiceDesign checkpoints only, on
+    mlx-audio's ``generate_voice_design`` (the same instruct-track loop as
+    CustomVoice with the speaker row absent — qwen3_tts.py:2143 delegates
+    to ``_generate_with_instruct(speaker=None)``). Buffered: chunking
+    follows :class:`TTSConfig` as in :func:`synthesize`.
+    """
+    ensure_served(model, path="design")
+    cfg = config.with_overrides(**overrides)
+    if not (cfg.instruct or "").strip():
+        raise ValueError(
+            "VoiceDesign synthesis needs `instruct` — a voice description "
+            "like 'A cheerful young female voice with high pitch and "
+            "energetic tone' (#46)"
+        )
+    if overrides.get("seed") is not None:
+        mx.random.seed(int(overrides["seed"]))
+    stream = cfg.max_tokens > 0  # always stream; final chunk carries the tail
+    for result in model.generate_voice_design(
+        text=text,
+        instruct=cfg.instruct,
+        language=cfg.language,
         temperature=cfg.temperature,
         top_k=cfg.top_k,
         top_p=cfg.top_p,
