@@ -213,6 +213,7 @@ class StreamLockReleaseTest(unittest.TestCase):
 
         model = SimpleNamespace(
             config=SimpleNamespace(
+                tts_model_type="custom_voice",
                 talker_config=SimpleNamespace(spk_id={"vivian": 1}, codec_language_id={})
             )
         )

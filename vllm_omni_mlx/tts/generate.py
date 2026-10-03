@@ -18,6 +18,7 @@ from typing import Any, Iterator
 import mlx.core as mx
 
 from .config import TTSConfig
+from .variants import ensure_served
 
 
 def synthesize(model: Any, config: TTSConfig, text: str, **overrides) -> Iterator[mx.array]:
@@ -26,6 +27,7 @@ def synthesize(model: Any, config: TTSConfig, text: str, **overrides) -> Iterato
     Overrides follow TTSConfig.with_overrides semantics; `seed` sets the
     global MLX RNG before generation for reproducibility.
     """
+    ensure_served(model)
     cfg = config.with_overrides(**overrides)
     if overrides.get("seed") is not None:
         mx.random.seed(int(overrides["seed"]))

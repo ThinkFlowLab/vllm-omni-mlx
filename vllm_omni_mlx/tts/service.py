@@ -18,6 +18,7 @@ from .config import TTSConfig
 from .generate import synthesize, wav_bytes
 from .prompt_embeds import PromptEmbeds
 from .stream_loop import synthesize_stream
+from .variants import CUSTOM_VOICE, model_variant, require_served
 
 # stream-path chunk default (#40's measured knee; the buffered path keeps
 # TTSConfig.streaming_interval — chunking is irrelevant when joining)
@@ -34,12 +35,18 @@ class TTSService:
     def __init__(self, model: Any, config: TTSConfig | None = None):
         self._model = model
         self.config = config or TTSConfig()
+        self._variant = model_variant(model)  # unknown types fail at boot
         self._embeds = PromptEmbeds(model)
         self._lock = threading.Lock()
 
     @property
     def name(self) -> str:
         return self.config.model_ref
+
+    @property
+    def model_type(self) -> str:
+        """The checkpoint's ``tts_model_type`` (see tts/variants.py)."""
+        return self._variant
 
     @property
     def voices(self) -> list[str]:
@@ -107,6 +114,11 @@ class TTSService:
             raise ValueError("input must be a non-empty string")
         if speed != 1.0:
             raise ValueError("speed != 1.0 is not supported yet")
+        if self._variant != CUSTOM_VOICE:
+            # base (no spk_id presets, cloning-only) and voice_design need
+            # generation paths this build doesn't have yet — reject with the
+            # tracking issue rather than a confusing preset-voice error
+            require_served(self._variant)
         speaker = (voice or self.config.speaker).lower()
         if speaker not in self.voices:
             raise ValueError(f"voice '{voice}' is not one of the preset voices")

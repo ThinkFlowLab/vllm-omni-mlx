@@ -31,6 +31,7 @@ from .code_predictor import CodePredictor
 from .config import TTSConfig
 from .prompt_embeds import PromptEmbeds
 from .talker import Talker
+from .variants import ensure_served
 
 FRAME_RATE = 12.5  # codec frames per second of audio (12 Hz tokenizer)
 SAMPLES_PER_FRAME = 1920  # 24000 Hz / 12.5
@@ -183,6 +184,7 @@ def synthesize_stream(model: Any, config: TTSConfig, text: str, **overrides) -> 
     """Config-driven wrapper mirroring generate.synthesize's contract, on the
     fast-path loop. `seed` reseeds MLX's RNG for reproducibility; overrides
     follow TTSConfig.with_overrides semantics."""
+    ensure_served(model)
     cfg = config.with_overrides(**overrides)
     if overrides.get("seed") is not None:
         mx.random.seed(int(overrides["seed"]))
