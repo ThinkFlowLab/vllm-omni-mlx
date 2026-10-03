@@ -200,7 +200,7 @@ class BaseCloneE2ETest(unittest.TestCase):
         # synthesize a reference with the sibling CustomVoice checkpoint if
         # cached; else skip — a real speech clip, not a tone (HNR gates need
         # voiced audio)
-        from vllm_omni_mlx.tts.config import DEFAULT_MODEL, local_snapshot
+        from vllm_omni_mlx.tts.config import DEFAULT_MODEL, load_tts_model, local_snapshot
 
         if local_snapshot(DEFAULT_MODEL) is None:
             raise unittest.SkipTest("no CustomVoice snapshot cached to synthesize a reference clip")
@@ -211,7 +211,7 @@ class BaseCloneE2ETest(unittest.TestCase):
         return {"ref_audio": b64(clip), "ref_text": "This is the voice we are cloning today."}
 
     def test_clone_round_trip_is_speech(self):
-        from tests.audio_metrics import CLEAN_VOICE_HNR_DB, int16_pcm_hnr_db
+        from tests.audio_metrics import CATASTROPHIC_HNR_DB, int16_pcm_hnr_db
 
         voice = self.reference_clip()
         payload, content_type = self.service.speech_bytes("The cloned voice says this.", voice=voice)
@@ -219,7 +219,7 @@ class BaseCloneE2ETest(unittest.TestCase):
         self.assertGreater(len(payload), 24000)  # >1s of 24 kHz 16-bit mono
         pcm = payload[44:]  # past the RIFF header
         hnr = int16_pcm_hnr_db(pcm)
-        self.assertGreater(hnr, -5.0, f"HNR {hnr:.2f} dB below catastrophic floor: noise-like clone")
+        self.assertGreater(hnr, CATASTROPHIC_HNR_DB, f"HNR {hnr:.2f} dB below catastrophic floor: noise-like clone")
 
 
 if __name__ == "__main__":
