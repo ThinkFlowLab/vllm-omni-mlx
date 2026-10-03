@@ -54,7 +54,7 @@ Like vLLM-Omni, vllm-omni-mlx targets omni-modality serving across the speech st
 | Text / image / audio in → text + speech out | Qwen3-Omni | `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` | `mlx-vlm` (`[omni]` extra) | ⚠️ via mlx-vlm — speech-out chat not plumbed yet, not verified here <sup>1</sup> |
 | Speech in → text out (ASR) | Whisper, Parakeet, Qwen3-ASR, Qwen2-Audio, Voxtral, SenseVoice, Moonshine, … <sup>2</sup> | `mlx-community/whisper-large-v3-turbo` | `mlx-audio` (`[tts]` extra) | 🚧 planned — engine support via mlx-audio stt, transcription endpoint not built yet |
 | Text → speech out | Qwen3-TTS-12Hz-1.7B-CustomVoice | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end (4-bit) <sup>3</sup> |
-| Text → speech out (described voice) | Qwen3-TTS-12Hz-1.7B-VoiceDesign | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | `mlx-audio` (`[tts]` extra) | ✅ buffered path verified (4-bit, weight-gated tests); streaming is #52 <sup>3</sup> |
+| Text → speech out (described voice) | Qwen3-TTS-12Hz-1.7B-VoiceDesign | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end buffered + streaming (4-bit, weight-gated tests) <sup>3</sup> |
 
 <sup>1</sup> mlx-vlm 0.7 ships the full Qwen3-Omni thinker/talker implementation; this server currently
 consumes its text output only — speech-out chat and video input are future work. The 30B-A3B MoE
@@ -149,8 +149,8 @@ add an emotion/style prompt, `language` forces a language (default auto);
 field **is the voice** — a description like "A cheerful young female voice with
 high pitch and energetic tone" (required; `voice` is rejected — presets don't
 exist there). The field's meaning is set by the loaded checkpoint, mirroring
-mlx-audio's own mapping; VoiceDesign serving is buffered for now (streaming is
-#52). Streaming: pass `"stream": true` for chunked raw
+mlx-audio's own mapping; VoiceDesign works buffered and streaming, on the same
+first-chunk fast path as CustomVoice. Streaming: pass `"stream": true` for chunked raw
 PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
 WAV — first audio typically lands in under 0.5 s instead of after the full
 generation; `streaming_interval` (default 0.5 s) trades first-audio latency

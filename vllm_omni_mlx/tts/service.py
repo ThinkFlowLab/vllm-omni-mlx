@@ -113,11 +113,6 @@ class TTSService:
         """
         if isinstance(voice, dict):
             raise ValueError("streaming voice cloning is not supported yet — #50")
-        if self._variant == VOICE_DESIGN:
-            raise ValueError(
-                "streaming VoiceDesign synthesis is not supported yet — #52; "
-                "the buffered path (stream absent/false) serves it"
-            )
         overrides = self._validated_overrides(input, voice, speed, instructions, language)
         interval = DEFAULT_STREAM_INTERVAL if streaming_interval is None else streaming_interval
         if not 0.0 < interval <= 10.0:
