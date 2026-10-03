@@ -15,7 +15,7 @@ from typing import Any, Iterator, Optional
 import mlx.core as mx
 
 from .config import TTSConfig
-from .generate import synthesize, wav_bytes
+from .generate import MAX_REF_SECONDS, decode_ref_audio, synthesize, synthesize_clone, wav_bytes
 from .prompt_embeds import PromptEmbeds
 from .stream_loop import synthesize_stream
 from .variants import CUSTOM_VOICE, model_variant, require_served
@@ -55,14 +55,24 @@ class TTSService:
     def speech_bytes(
         self,
         input: str,
-        voice: Optional[str] = None,
+        voice: "str | dict | None" = None,
         response_format: str = "wav",
         speed: float = 1.0,
         instructions: Optional[str] = None,
         language: Optional[str] = None,
     ) -> tuple[bytes, str]:
-        """Synthesize `input` to (payload, content_type). Raises ValueError on
-        invalid requests; generation is serialized under the service lock."""
+        """Synthesize `input` to (payload, content_type). `voice` is a preset
+        speaker name or — on Base checkpoints — a cloning object
+        ``{"ref_audio": <base64>, "ref_text": "..."}`` (#49). Raises
+        ValueError on invalid requests; generation is serialized under the
+        service lock."""
+        if isinstance(voice, dict):
+            ref_audio, ref_text = self._clone_inputs(input, voice, speed)
+            with self._lock:
+                chunks = synthesize_clone(self._model, self.config, input, ref_audio, ref_text)
+                if response_format == "wav":
+                    return wav_bytes(chunks), "audio/wav"
+                return b"".join(_pcm16(chunk) for chunk in chunks), "audio/pcm"
         overrides = self._validated_overrides(input, voice, speed, instructions, language)
         with self._lock:
             chunks = synthesize(self._model, self.config, input, **overrides)
@@ -92,6 +102,8 @@ class TTSService:
         that much audio exists, independent of the steady chunk size, so
         TTFA is not floored by streaming_interval.
         """
+        if isinstance(voice, dict):
+            raise ValueError("streaming voice cloning is not supported yet — #50")
         overrides = self._validated_overrides(input, voice, speed, instructions, language)
         interval = DEFAULT_STREAM_INTERVAL if streaming_interval is None else streaming_interval
         if not 0.0 < interval <= 10.0:
@@ -108,6 +120,31 @@ class TTSService:
                     yield _pcm16(chunk)
 
         return stream()
+
+    def _clone_inputs(self, input: str, voice: dict, speed: float) -> tuple["mx.array", str]:
+        """Validate a cloning ``voice`` object and decode the reference clip
+        (base64 → 24 kHz mono) outside the service lock — decode errors and
+        caps are request errors, not generation failures."""
+        if not input or not input.strip():
+            raise ValueError("input must be a non-empty string")
+        if speed != 1.0:
+            raise ValueError("speed != 1.0 is not supported yet")
+        require_served(self._variant, path="clone")
+        unknown = set(voice) - {"ref_audio", "ref_text"}
+        if unknown:
+            raise ValueError(f"voice object supports ref_audio and ref_text, got {sorted(unknown)}")
+        ref_text = voice.get("ref_text")
+        if not isinstance(ref_text, str) or not ref_text.strip():
+            raise ValueError("voice.ref_text (transcript of the reference clip) is required for cloning")
+        if "ref_audio" not in voice:
+            raise ValueError("voice.ref_audio (base64 audio) is required for cloning")
+        ref_audio = decode_ref_audio(voice["ref_audio"])
+        duration = ref_audio.size / 24000
+        if duration > MAX_REF_SECONDS:
+            raise ValueError(f"ref_audio is {duration:.1f}s; the cap is {MAX_REF_SECONDS:.0f}s")
+        if duration < 0.5:
+            raise ValueError(f"ref_audio is {duration:.2f}s; a cloning reference needs at least 0.5s of speech")
+        return ref_audio, ref_text
 
     def _validated_overrides(self, input, voice, speed, instructions, language) -> dict:
         if not input or not input.strip():
