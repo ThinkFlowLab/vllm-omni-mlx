@@ -154,6 +154,25 @@ frame bucket, so compiled decode shapes stay bounded) — measured time to
 first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
 `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
+**Voice cloning** (Base checkpoints, e.g.
+`mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit`): `voice` is instead an object
+carrying a short reference clip and its transcript —
+
+```sh
+vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit --omni --api-key demo
+REF=$(base64 -i reference.wav)
+curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
+    -d "{\"input\": \"Any text in the cloned voice.\", \"voice\": {\"ref_audio\": \"$REF\", \"ref_text\": \"transcript of the reference clip\"}}" \
+    http://127.0.0.1:8000/v1/audio/speech -o cloned.wav
+```
+
+The clip is decoded and resampled to 24 kHz mono server-side (any format
+miniaudio/ffmpeg reads); keep it 0.5–30 s of clean speech. Base checkpoints
+have no preset voices (`GET /v1/audio/voices` returns `[]`) and CustomVoice
+checkpoints ignore cloning — send the form matching your checkpoint.
+Buffered only for now; streaming cloning is tracked in
+[#50](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/50).
+
 OpenAI-style request:
 
 ```sh

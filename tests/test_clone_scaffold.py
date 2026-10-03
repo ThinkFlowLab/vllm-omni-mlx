@@ -238,6 +238,11 @@ class BaseCloneE2ETest(unittest.TestCase):
         hnr = int16_pcm_hnr_db(pcm)
         self.assertGreater(hnr, CATASTROPHIC_HNR_DB, f"HNR {hnr:.2f} dB below catastrophic floor: noise-like clone")
 
+    def test_base_checkpoint_serves_no_preset_voices(self):
+        # the correction at the heart of #45: Base ships no spk_id map
+        self.assertEqual(self.service.voices, [])
+        self.assertEqual(self.service.model_type, "base")
+
 
 if __name__ == "__main__":
     unittest.main()
