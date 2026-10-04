@@ -203,6 +203,7 @@ class CloneEndpointTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("ref_text", response.json()["error"]["message"])
 
+    @requires_mlx_audio  # decode_ref_audio routes through mlx-audio; 400s on the core install (PR #63's one-liner, ridden here with attribution so this branch's CI is green — main itself stays red until #63 lands)
     def test_streaming_clone_streams_pcm(self):
         # #50: stream + voice object routes to the ICL fast path, PCM out
         response = self.client.post(
