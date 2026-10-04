@@ -5,6 +5,12 @@ Base checkpoint is cached and skips elsewhere (CI)."""
 
 import base64
 import io
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
 import wave
 from types import SimpleNamespace
@@ -116,10 +122,13 @@ class CloneVoiceObjectTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
             service.speech_bytes("hello", voice=voice)
 
-    def test_streaming_clone_rejected_until_50(self):
+    def test_streaming_clone_on_custom_voice_needs_base(self):
+        # streaming clone is served on Base (#50); a CustomVoice checkpoint
+        # rejects the voice object at validation, before any generation
         voice = {"ref_audio": b64(wav_bytes_tone(2.0)), "ref_text": "what it says"}
-        with self.assertRaisesRegex(ValueError, "#50"):
-            self.base_service().speech_stream("hello", voice=voice)
+        service = TTSService(stub_model("custom_voice"))
+        with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
+            service.speech_stream("hello", voice=voice)
 
     def test_empty_input_rejected_on_clone_path(self):
         voice = {"ref_audio": b64(wav_bytes_tone(2.0)), "ref_text": "what it says"}
@@ -154,9 +163,15 @@ class CloneEndpointTest(unittest.TestCase):
             received["text"], received["ref_text"], received["ref_audio_len"] = text, ref_text, ref_audio.size
             yield mx.zeros(26400)  # 1.1 s of 24 kHz float
 
-        patcher = mock.patch.object(service_module, "synthesize_clone", fake_synthesize_clone)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        def fake_synthesize_clone_stream(model, config, text, ref_audio, ref_text, **kwargs):
+            received["stream_kwargs"] = kwargs
+            yield mx.zeros(4800)   # 0.2 s chunk
+            yield mx.zeros(48000)  # 2 s tail
+
+        for name, fake in (("synthesize_clone", fake_synthesize_clone), ("synthesize_clone_stream", fake_synthesize_clone_stream)):
+            patcher = mock.patch.object(service_module, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.received = received
         service = TTSService(stub_model("base"), TTSConfig())
         self.client = TestClient(create_app(tts_service=service, api_key="k1"))
@@ -186,14 +201,17 @@ class CloneEndpointTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("ref_text", response.json()["error"]["message"])
 
-    def test_streaming_clone_is_a_400_until_50(self):
+    def test_streaming_clone_streams_pcm(self):
+        # #50: stream + voice object routes to the ICL fast path, PCM out
         response = self.client.post(
             "/v1/audio/speech",
             json={"input": "hello", "voice": self.voice, "stream": True, "response_format": "pcm"},
             headers={"Authorization": "Bearer k1"},
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("#50", response.json()["error"]["message"])
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers["content-type"].startswith("audio/pcm"))
+        self.assertEqual(len(response.content), (4800 + 48000) * 2)  # two chunks, 16-bit
+        self.assertIn("streaming_interval", self.received["stream_kwargs"])
 
 
 class BaseCloneE2ETest(unittest.TestCase):
@@ -216,16 +234,23 @@ class BaseCloneE2ETest(unittest.TestCase):
     def reference_clip(cls) -> dict:
         # synthesize a reference with the sibling CustomVoice checkpoint if
         # cached; else skip — a real speech clip, not a tone (HNR gates need
-        # voiced audio)
-        from vllm_omni_mlx.tts.config import DEFAULT_MODEL, load_tts_model, local_snapshot
+        # voiced audio). Cached per class: the donor model is released as
+        # soon as the clip exists so it never coexists with Base in memory.
+        if getattr(cls, "_clip", None) is None:
+            from vllm_omni_mlx.tts.config import DEFAULT_MODEL, load_tts_model, local_snapshot
 
-        if local_snapshot(DEFAULT_MODEL) is None:
-            raise unittest.SkipTest("no CustomVoice snapshot cached to synthesize a reference clip")
-        from vllm_omni_mlx.tts.generate import synthesize, wav_bytes
+            if local_snapshot(DEFAULT_MODEL) is None:
+                raise unittest.SkipTest("no CustomVoice snapshot cached to synthesize a reference clip")
+            from vllm_omni_mlx.tts.generate import synthesize, wav_bytes
 
-        donor = load_tts_model(TTSConfig())
-        clip = wav_bytes(synthesize(donor, TTSConfig(), "This is the voice we are cloning today.", seed=7))
-        return {"ref_audio": b64(clip), "ref_text": "This is the voice we are cloning today."}
+            donor = load_tts_model(TTSConfig())
+            try:
+                clip = wav_bytes(synthesize(donor, TTSConfig(), "This is the voice we are cloning today.", seed=7))
+            finally:
+                del donor
+                mx.clear_cache()
+            cls._clip = {"ref_audio": b64(clip), "ref_text": "This is the voice we are cloning today."}
+        return cls._clip
 
     def test_clone_round_trip_is_speech(self):
         from tests.audio_metrics import CATASTROPHIC_HNR_DB, int16_pcm_hnr_db
@@ -237,6 +262,11 @@ class BaseCloneE2ETest(unittest.TestCase):
         pcm = payload[44:]  # past the RIFF header
         hnr = int16_pcm_hnr_db(pcm)
         self.assertGreater(hnr, CATASTROPHIC_HNR_DB, f"HNR {hnr:.2f} dB below catastrophic floor: noise-like clone")
+
+    def test_base_checkpoint_serves_no_preset_voices(self):
+        # the correction at the heart of #45: Base ships no spk_id map
+        self.assertEqual(self.service.voices, [])
+        self.assertEqual(self.service.model_type, "base")
 
 
 if __name__ == "__main__":

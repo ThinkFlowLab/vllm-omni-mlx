@@ -1,6 +1,12 @@
 """MTP code predictor seam (#12 / M1.3): structure facts, per-step logits with
 KV cache advance, and determinism — gated on the cached checkpoint."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
 
 import mlx.core as mx

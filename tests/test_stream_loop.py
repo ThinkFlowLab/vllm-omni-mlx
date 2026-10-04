@@ -11,6 +11,12 @@ the same envelope between its own intervals, so parity is asserted on draws
 (exact) plus a mean-envelope tripwire well below structural-break territory
 (1.6e-2 mean, the left-context-windowing error mode)."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
 
 import mlx.core as mx

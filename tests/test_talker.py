@@ -2,6 +2,12 @@
 config, channel-summed codec embeds, and the config-derived codec-id
 suppression list — gated on the cached checkpoint."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
 
 import mlx.core as mx
