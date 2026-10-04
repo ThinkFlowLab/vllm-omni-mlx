@@ -9,6 +9,8 @@ import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 from unittest import mock
 
 from starlette.testclient import TestClient
@@ -143,7 +145,7 @@ class AudioRoutesTest(unittest.TestCase):
         self.assertEqual(bad_voice.status_code, 400)
 
 
-class RealSpeechRoundTripTest(unittest.TestCase):
+class RealSpeechRoundTripTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot

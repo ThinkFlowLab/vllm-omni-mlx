@@ -9,6 +9,8 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
 
+from tests._teardown import ReleaseAfterClass
+
 import mlx.core as mx
 
 from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot
@@ -20,7 +22,7 @@ REF_TEXT = "This is the voice we are cloning today."
 TEXT = "The streaming clone loop must draw the very same tokens."
 
 
-class ICLStreamE2ETest(unittest.TestCase):
+class ICLStreamE2ETest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(BASE) is None:

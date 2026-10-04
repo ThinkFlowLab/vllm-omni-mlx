@@ -11,6 +11,8 @@ import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 import wave
 import io
 
@@ -36,7 +38,7 @@ def wav_stats(data: bytes):
     return frames / 24000, rms, peak
 
 
-class GenerationTest(unittest.TestCase):
+class GenerationTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(DEFAULT_MODEL) is None:

@@ -15,6 +15,8 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
 
+from tests._teardown import ReleaseAfterClass
+
 from vllm_omni_mlx.tts.config import TTSConfig, load_tts_model, local_snapshot
 from vllm_omni_mlx.tts.service import TTSService
 
@@ -22,7 +24,7 @@ SMALL = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
 TEXT = "This sentence measures the small custom voice model end to end."
 
 
-class SmallCustomVoiceE2ETest(unittest.TestCase):
+class SmallCustomVoiceE2ETest(ReleaseAfterClass, unittest.TestCase):
     """Runs where the 0.6B snapshot is cached; skips in CI — green CI does
     not mean this battery ran."""
 

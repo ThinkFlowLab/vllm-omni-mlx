@@ -10,6 +10,8 @@ import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 from unittest import mock
 
 from vllm_omni_mlx.tts.config import (
@@ -50,7 +52,7 @@ class LoaderGuardTest(unittest.TestCase):
         self.assertIn("vllm-omni-mlx[tts]", str(ctx.exception))
 
 
-class CheckpointMappingTest(unittest.TestCase):
+class CheckpointMappingTest(ReleaseAfterClass, unittest.TestCase):
     """mlx-audio owns the checkpoint→MLX mapping; a full load of the model with
     strict weight application IS the no-orphan check. Runs where the snapshot
     is cached (~2.2 GiB), skips in CI."""

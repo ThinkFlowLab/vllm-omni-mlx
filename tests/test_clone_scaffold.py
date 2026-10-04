@@ -12,6 +12,8 @@ import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 import wave
 from types import SimpleNamespace
 
@@ -214,7 +216,7 @@ class CloneEndpointTest(unittest.TestCase):
         self.assertIn("streaming_interval", self.received["stream_kwargs"])
 
 
-class BaseCloneE2ETest(unittest.TestCase):
+class BaseCloneE2ETest(ReleaseAfterClass, unittest.TestCase):
     """Weight-gated: full ICL round-trip on the Base checkpoint. Runs where
     `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit` is cached, skips in CI —
     a green CI run does not mean this path was exercised."""

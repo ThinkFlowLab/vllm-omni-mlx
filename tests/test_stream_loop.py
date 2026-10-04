@@ -19,6 +19,8 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
 
+from tests._teardown import ReleaseAfterClass
+
 import mlx.core as mx
 
 from tests.audio_metrics import CLEAN_VOICE_HNR_DB, int16_pcm_hnr_db
@@ -94,7 +96,7 @@ class SchedulingMathTest(unittest.TestCase):
         self.assertEqual(_pad_target(6, 2, 6), 6)
 
 
-class StreamLoopTest(unittest.TestCase):
+class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(DEFAULT_MODEL) is None:

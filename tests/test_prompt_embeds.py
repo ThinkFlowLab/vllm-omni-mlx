@@ -10,6 +10,8 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
 
+from tests._teardown import ReleaseAfterClass
+
 import mlx.core as mx
 
 from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot
@@ -18,7 +20,7 @@ from vllm_omni_mlx.tts.prompt_embeds import PromptEmbeds
 TEXT = "The quick brown fox jumps over the lazy dog."
 
 
-class PromptEmbedsTest(unittest.TestCase):
+class PromptEmbedsTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(DEFAULT_MODEL) is None:

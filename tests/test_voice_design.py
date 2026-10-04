@@ -8,6 +8,8 @@ floors don't transfer).
 
 import io
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 import wave
 from types import SimpleNamespace
 
@@ -139,7 +141,7 @@ class DesignServiceTest(unittest.TestCase):
             self._service().speech_stream(EN, instructions=DESC)
 
 
-class VoiceDesignWeightGatedTest(unittest.TestCase):
+class VoiceDesignWeightGatedTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(VD_MODEL) is None:
