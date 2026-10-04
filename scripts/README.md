@@ -2,6 +2,22 @@
 
 Operational and development scripts.
 
+- `run_tests.sh`: run the suite **one file per process** — each file's
+  checkpoints and Metal buffers return to the OS when its process exits,
+  instead of stacking every weight-gated class's model in one `pytest tests/`
+  process (which can swamp a 16 GB Mac). The heavy Base+donor clone batteries
+  (`BaseCloneE2ETest`, `ICLStreamE2ETest`, ~8 GB peak) are skipped by default;
+  pass `--heavy` (or set `VOMX_HEAVY_TESTS=1`) to include them:
+
+  ```sh
+  scripts/run_tests.sh                 # light suite, per-file isolation
+  scripts/run_tests.sh --heavy         # include the heavy batteries
+  scripts/run_tests.sh tests/test_tts_generate.py   # specific files
+  ```
+
+  `PYTHON` overrides the interpreter (default `.venv/bin/python`); pytest is
+  used when importable, else unittest; `HF_HUB_OFFLINE` defaults to 1.
+
 - `latency_probe.py` (#6): TTFT / inter-token latency probe against a running
   server — cold vs cached prefix, per model — so "extreme low latency" has
   numbers. Stdlib only:

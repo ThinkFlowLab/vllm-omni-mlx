@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import mlx.core as mx
 
+from tests._heavy import requires_heavy
 from vllm_omni_mlx.tts.config import TTSConfig
 from vllm_omni_mlx.tts.generate import MAX_REF_SECONDS, decode_ref_audio, synthesize_clone
 from vllm_omni_mlx.tts.service import TTSService
@@ -214,6 +215,7 @@ class CloneEndpointTest(unittest.TestCase):
         self.assertIn("streaming_interval", self.received["stream_kwargs"])
 
 
+@requires_heavy
 class BaseCloneE2ETest(unittest.TestCase):
     """Weight-gated: full ICL round-trip on the Base checkpoint. Runs where
     `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit` is cached, skips in CI —

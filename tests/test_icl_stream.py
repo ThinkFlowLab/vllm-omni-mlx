@@ -11,6 +11,7 @@ import unittest
 
 import mlx.core as mx
 
+from tests._heavy import requires_heavy
 from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot
 from vllm_omni_mlx.tts.service import TTSService
 from vllm_omni_mlx.tts.stream_loop import generate_icl_frames, synthesize_clone_stream
@@ -20,6 +21,7 @@ REF_TEXT = "This is the voice we are cloning today."
 TEXT = "The streaming clone loop must draw the very same tokens."
 
 
+@requires_heavy
 class ICLStreamE2ETest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
