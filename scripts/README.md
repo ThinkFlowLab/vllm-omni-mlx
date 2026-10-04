@@ -25,3 +25,24 @@ Operational and development scripts.
   ```sh
   python scripts/spike_mlxaudio_qwen3tts.py --streaming-interval 0.5
   ```
+
+- `profile_stream_loop.py` (#65): per-frame phase split of the vendored
+  stream loop — talker forward / predictor forwards / sampling / vocoder
+  decode / Python residue, plus decile-binned frame wall across the
+  generation (sustained-RTF drift). Eval brackets add sync overhead, so
+  read the phase *shares*, not absolute RTF. Weight-gated (local snapshot):
+
+  ```sh
+  python scripts/profile_stream_loop.py --max-tokens 800
+  ```
+
+- `bench_stream_rtf.py` (#65): sustained-RTF A/B bench for the streaming
+  speech path — prewarm + clock ramp, then N full generations of a fixed
+  long text at serving defaults; reports per-turn wall/audio/RTF, p50/min/
+  max, first-chunk latency, peak memory. Runs unchanged across branches;
+  `VLLM_OMNI_TTS_EAGER_STREAM=1` forces the uncompiled loop on the
+  compiled branch (isolation ablation):
+
+  ```sh
+  python scripts/bench_stream_rtf.py --label run --turns 4
+  ```

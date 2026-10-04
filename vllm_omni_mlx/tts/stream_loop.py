@@ -41,8 +41,10 @@ import mlx.core as mx
 from .code_predictor import CodePredictor
 from .compiled_steps import (
     EAGER_STREAM,
+    make_input_embeds,
     make_predictor_frame,
     make_talker_decode,
+    make_talker_sampler,
 )
 from .config import TTSConfig
 from .prompt_embeds import PromptEmbeds
@@ -75,6 +77,27 @@ def initial_frames_bucket(requested: int, chunk_frames: int) -> int:
 def _pad_target(remainder: int, initial_frames: int, chunk_frames: int) -> int:
     """Compiled shape for a remainder chunk: the smallest bucket it fits."""
     return initial_frames if remainder <= initial_frames else chunk_frames
+
+
+def _flush_pending(
+    pending_flags: list, input_embeds: mx.array, generated_codes: list
+) -> bool:
+    """Batched EOS check for the compiled path (#65): evaluate the batch's
+    ``is_eos`` flags — and the current ``input_embeds``, bounding the lazy
+    graph depth — at the chunk boundary instead of every frame, so the CPU
+    stays ahead of the GPU across frames. Frames generated past an EOS were
+    computed from dead feedback and are truncated before any decode (≤
+    chunk_frames of them, and only in the final chunk of a stream). Returns
+    False when generation must stop."""
+    mx.eval(*pending_flags, input_embeds)
+    for i, flag in enumerate(pending_flags):
+        if flag.item():
+            keep = len(generated_codes) - (len(pending_flags) - i)
+            del generated_codes[keep:]
+            pending_flags.clear()
+            return False
+    pending_flags.clear()
+    return True
 
 
 def generate_custom_voice_frames(
@@ -115,6 +138,10 @@ def generate_custom_voice_frames(
     # compiled-path state: the cache as arrays after the eager prefill
     keys = values = None
     position = 0
+    # compiled-path sampler state: on-device token ring (dummy = vocab) and
+    # the batched EOS flags flushed at chunk boundaries
+    history = pending_flags = None
+    frame_idx = 0
 
     # compiled fast path (#65): closures are cached per model, so building
     # them here reuses the trace across requests
@@ -131,6 +158,22 @@ def generate_custom_voice_frames(
         if compiled
         else None
     )
+    sampler_c = (
+        make_talker_sampler(
+            model,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            suppress_tokens=suppress_tokens,
+        )
+        if compiled
+        else None
+    )
+    embeds_step = make_input_embeds(model.talker) if compiled else None
+    if compiled:
+        history = mx.full((64,), config.vocab_size, dtype=mx.uint32)
+        pending_flags = []
 
     initial_frames = initial_frames_bucket(initial_frames, chunk_frames)
     decoder = model.speech_tokenizer.decoder
@@ -172,21 +215,22 @@ def generate_custom_voice_frames(
                 )
                 position += 1
 
-            next_token = model._sample_token(
-                logits,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                generated_tokens=generated_token_ids or None,
-                suppress_tokens=suppress_tokens,
-            )
+            if compiled:
+                next_token = sampler_c(logits, history)
+            else:
+                next_token = model._sample_token(
+                    logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    generated_tokens=generated_token_ids or None,
+                    suppress_tokens=suppress_tokens,
+                )
             is_eos = next_token[0, 0] == eos_token_id
 
-            if compiled:
-                all_codes = predictor_frame(hidden[:, -1:, :], next_token)
-                code_token_list = [all_codes[:, i : i + 1] for i in range(all_codes.shape[1])]
-            else:
+            all_codes = predictor_frame(hidden[:, -1:, :], next_token) if compiled else None
+            if not compiled:
                 code_tokens = [next_token]
                 code_hidden = hidden[:, -1:, :]
                 for c in code_cache:  # reset in place, as mlx-audio's loop does
@@ -204,27 +248,45 @@ def generate_custom_voice_frames(
                         model._sample_token(code_logits, temperature=temperature, top_k=top_k, top_p=top_p)
                     )
                 all_codes = mx.concatenate(code_tokens, axis=1)
-                code_token_list = code_tokens
 
             if trailing_idx < trailing_text_hidden.shape[1]:
                 text_embed = trailing_text_hidden[:, trailing_idx : trailing_idx + 1, :]
                 trailing_idx += 1
             else:
                 text_embed = tts_pad_embed
-            input_embeds = text_embed + talker.codec_embeds(code_token_list)
+            if compiled:
+                input_embeds = embeds_step(all_codes, text_embed)
+            else:
+                input_embeds = text_embed + talker.codec_embeds(code_tokens)
 
-            # single sync point per frame, as mlx-audio's loop does
-            mx.eval(input_embeds, is_eos)
-            if is_eos.item():
-                break
+            if compiled:
+                # on-device ring update for the repetition penalty —
+                # functional (concat), so no materialization/sync per frame
+                slot = frame_idx % 64
+                history = mx.concatenate(
+                    [history[:slot], next_token.reshape(1), history[slot + 1 :]]
+                )
+                frame_idx += 1
+                pending_flags.append(is_eos)
+                generated_codes.append(all_codes)
+            else:
+                # single sync point per frame, as mlx-audio's loop does
+                mx.eval(input_embeds, is_eos)
+                if is_eos.item():
+                    break
 
-            generated_token_ids.append(int(next_token[0, 0]))
-            generated_codes.append(all_codes)
+                generated_token_ids.append(int(next_token[0, 0]))
+                generated_codes.append(all_codes)
 
             boundary = initial_frames if decoded_frames == 0 else chunk_frames
             if len(generated_codes) - decoded_frames >= boundary:
+                if compiled and not _flush_pending(pending_flags, input_embeds, generated_codes):
+                    break
                 yield decode_pending()
 
+        if compiled and pending_flags:
+            # EOS inside the final, never-flushed batch
+            _flush_pending(pending_flags, input_embeds, generated_codes)
         if len(generated_codes) > decoded_frames:
             remainder = len(generated_codes) - decoded_frames
             yield decode_pending(padded_to=_pad_target(remainder, initial_frames, chunk_frames))
@@ -307,6 +369,10 @@ def generate_icl_frames(
     # compiled-path state: the cache as arrays after the eager prefill
     keys = values = None
     position = 0
+    # compiled-path sampler state: on-device token ring (dummy = vocab) and
+    # the batched EOS flags flushed at chunk boundaries
+    history = pending_flags = None
+    frame_idx = 0
 
     # compiled fast path (#65) — same closures as the CustomVoice loop
     compiled = not EAGER_STREAM
@@ -322,6 +388,22 @@ def generate_icl_frames(
         if compiled
         else None
     )
+    sampler_c = (
+        make_talker_sampler(
+            model,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            suppress_tokens=suppress_tokens,
+        )
+        if compiled
+        else None
+    )
+    embeds_step = make_input_embeds(model.talker) if compiled else None
+    if compiled:
+        history = mx.full((64,), config.vocab_size, dtype=mx.uint32)
+        pending_flags = []
 
     initial_frames = initial_frames_bucket(initial_frames, chunk_frames)
     decoder = model.speech_tokenizer.decoder
@@ -360,21 +442,22 @@ def generate_icl_frames(
                 )
                 position += 1
 
-            next_token = model._sample_token(
-                logits,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                generated_tokens=generated_token_ids or None,
-                suppress_tokens=suppress_tokens,
-            )
+            if compiled:
+                next_token = sampler_c(logits, history)
+            else:
+                next_token = model._sample_token(
+                    logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    generated_tokens=generated_token_ids or None,
+                    suppress_tokens=suppress_tokens,
+                )
             is_eos = next_token[0, 0] == eos_token_id
 
-            if compiled:
-                all_codes = predictor_frame(hidden[:, -1:, :], next_token)
-                code_token_list = [all_codes[:, i : i + 1] for i in range(all_codes.shape[1])]
-            else:
+            all_codes = predictor_frame(hidden[:, -1:, :], next_token) if compiled else None
+            if not compiled:
                 code_tokens = [next_token]
                 code_hidden = hidden[:, -1:, :]
                 for c in code_cache:
@@ -392,26 +475,44 @@ def generate_icl_frames(
                         model._sample_token(code_logits, temperature=temperature, top_k=top_k, top_p=top_p)
                     )
                 all_codes = mx.concatenate(code_tokens, axis=1)
-                code_token_list = code_tokens
 
             if trailing_idx < trailing_text_hidden.shape[1]:
                 text_embed = trailing_text_hidden[:, trailing_idx : trailing_idx + 1, :]
                 trailing_idx += 1
             else:
                 text_embed = tts_pad_embed
-            input_embeds = text_embed + talker.codec_embeds(code_token_list)
+            if compiled:
+                input_embeds = embeds_step(all_codes, text_embed)
+            else:
+                input_embeds = text_embed + talker.codec_embeds(code_tokens)
 
-            mx.eval(input_embeds, is_eos)
-            if is_eos.item():
-                break
+            if compiled:
+                # on-device ring update for the repetition penalty —
+                # functional (concat), so no materialization/sync per frame
+                slot = frame_idx % 64
+                history = mx.concatenate(
+                    [history[:slot], next_token.reshape(1), history[slot + 1 :]]
+                )
+                frame_idx += 1
+                pending_flags.append(is_eos)
+                generated_codes.append(all_codes)
+            else:
+                mx.eval(input_embeds, is_eos)
+                if is_eos.item():
+                    break
 
-            generated_token_ids.append(int(next_token[0, 0]))
-            generated_codes.append(all_codes)
+                generated_token_ids.append(int(next_token[0, 0]))
+                generated_codes.append(all_codes)
 
             boundary = initial_frames if decoded_frames == 0 else chunk_frames
             if len(generated_codes) - decoded_frames >= boundary:
+                if compiled and not _flush_pending(pending_flags, input_embeds, generated_codes):
+                    break
                 yield decode_pending()
 
+        if compiled and pending_flags:
+            # EOS inside the final, never-flushed batch
+            _flush_pending(pending_flags, input_embeds, generated_codes)
         if len(generated_codes) > decoded_frames:
             remainder = len(generated_codes) - decoded_frames
             yield decode_pending(padded_to=_pad_target(remainder, initial_frames, chunk_frames))
@@ -513,3 +614,27 @@ def _prewarm_decode_closures(model: Any, temperature: float, top_k: int, top_p: 
         mx.zeros((1, 1, hidden_size), dtype=embed_dtype), mx.zeros((1, 1), dtype=mx.uint32)
     )
     mx.eval(codes)
+
+    # sampler (penalty ring) + next-input embeds closures
+    vocab = model.config.talker_config.vocab_size
+    suppress = Talker(model.talker).suppressed_codec_ids()
+    sampler = make_talker_sampler(
+        model,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=1.05,
+        suppress_tokens=suppress,
+    )
+    token = sampler(
+        mx.zeros((1, 1, vocab), dtype=embed_dtype), mx.full((64,), vocab, dtype=mx.uint32)
+    )
+    mx.eval(token)
+
+    embeds_step = make_input_embeds(model.talker)
+    groups = model.config.talker_config.code_predictor_config.num_code_groups
+    embeds = embeds_step(
+        mx.zeros((1, groups), dtype=mx.uint32),
+        mx.zeros((1, 1, hidden_size), dtype=embed_dtype),
+    )
+    mx.eval(embeds)

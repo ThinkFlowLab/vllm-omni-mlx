@@ -74,14 +74,24 @@ class ICLStreamE2ETest(ReleaseAfterClass, unittest.TestCase):
                 model._sample_token = original
             return recorded
 
-        ours = record_tokens(
-            self.model, 11,
-            lambda: generate_icl_frames(
-                self.model, text=TEXT, ref_audio=ref, ref_text=REF_TEXT,
-                temperature=0.9, top_k=50, top_p=1.0, repetition_penalty=1.05,
-                max_tokens=256, initial_frames=2, chunk_frames=6,
-            ),
-        )
+        # token-exact parity is asserted against the eager loop (recorded
+        # via _sample_token, which cannot see draws inside the compiled
+        # closures); the compiled path's rare fp16 near-tie drift is covered
+        # by tests.test_stream_loop.test_compiled_drift_bounded
+        from vllm_omni_mlx.tts import stream_loop
+
+        was, stream_loop.EAGER_STREAM = stream_loop.EAGER_STREAM, True
+        try:
+            ours = record_tokens(
+                self.model, 11,
+                lambda: generate_icl_frames(
+                    self.model, text=TEXT, ref_audio=ref, ref_text=REF_TEXT,
+                    temperature=0.9, top_k=50, top_p=1.0, repetition_penalty=1.05,
+                    max_tokens=256, initial_frames=2, chunk_frames=6,
+                ),
+            )
+        finally:
+            stream_loop.EAGER_STREAM = was
         theirs = record_tokens(
             self.model, 11,
             lambda: self.model.generate(

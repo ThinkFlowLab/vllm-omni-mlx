@@ -54,7 +54,7 @@ import os
 import weakref
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -262,6 +262,92 @@ def make_predictor_frame(
 
     cache[key] = predictor_frame
     return predictor_frame
+
+
+def make_talker_sampler(
+    model: Any,
+    *,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    repetition_penalty: float,
+    suppress_tokens: list[int] | None,
+) -> Callable[[mx.array, mx.array], mx.array]:
+    """Compiled talker-draw sampler: (logits [1,1,vocab], history [64] uint32)
+    -> next_token [1,1] uint32.
+
+    Inlines ``_sample_token``'s full talker path (mlx-audio, MIT) with the
+    repetition-penalty context as an ARRAY input instead of a Python list —
+    the list forced the loop to ``int()`` the token every frame (a hard
+    CPU/GPU sync), which is what kept the CPU from running ahead of the
+    GPU (#65's residue). Semantics match eager exactly: the history is a
+    64-slot ring of the last tokens; eager penalizes the *unique* set of
+    ``generated[-64:]``, and duplicate-index penalty writes are idempotent
+    (same source logit, same multiplier), so writing per-occurrence is
+    value-identical. Unfilled ring slots carry ``vocab_size`` and route to
+    a dummy slot appended past the vocab — penalizing a zero by the
+    multiplier writes the same zero back, a no-op outside the real vocab.
+    """
+    cache = _closures_for(model)
+    key = (
+        "sampler",
+        temperature,
+        top_k,
+        top_p,
+        repetition_penalty,
+        tuple(suppress_tokens or ()),
+    )
+    if key in cache:
+        return cache[key]
+
+    vocab = model.config.talker_config.vocab_size
+    suppress = mx.array(suppress_tokens, dtype=mx.uint32) if suppress_tokens else None
+
+    @partial(mx.compile, inputs=mx.random.state, outputs=mx.random.state)
+    def sampler(logits: mx.array, history: mx.array) -> mx.array:
+        row = logits[:, -1, :]
+        if suppress_tokens:
+            row = mx.put_along_axis(
+                row, suppress[None, :], mx.array(float("-inf"), row.dtype), axis=-1
+            )
+        if repetition_penalty != 1.0:
+            ext = mx.concatenate([row, mx.zeros((1, 1), row.dtype)], axis=-1)
+            selected = mx.take(ext, history, axis=-1)
+            penalized = mx.where(
+                selected < 0, selected * repetition_penalty, selected / repetition_penalty
+            )
+            ext = mx.put_along_axis(ext, history[None, :], penalized, axis=-1)
+            row = ext[..., :vocab]
+        return _sample_predictor_token(row, temperature, top_k, top_p)
+
+    cache[key] = sampler
+    return sampler
+
+
+def make_input_embeds(talker: Any) -> Callable[[mx.array, mx.array], mx.array]:
+    """Compiled next-input prep: (all_codes [1, num_code_groups],
+    text_embed [1,1,hidden]) -> input_embeds [1,1,hidden].
+
+    ``Talker.codec_embeds``'s channel-summed lookup (mlx-audio, MIT) — base
+    embedding for group 0 plus each residual group's predictor embedding —
+    with the 16 gathers and 15 adds fused into one kernel instead of 30+
+    eager launches per frame."""
+    cache = _closures_for(talker)
+    if "input_embeds" in cache:
+        return cache["input_embeds"]
+
+    base_embedding = talker.get_input_embeddings()
+    predictor_embeddings = talker.code_predictor.codec_embedding
+
+    @mx.compile
+    def input_embeds_step(all_codes: mx.array, text_embed: mx.array) -> mx.array:
+        embed = base_embedding(all_codes[:, 0:1])
+        for group in range(1, all_codes.shape[1]):
+            embed = embed + predictor_embeddings[group - 1](all_codes[:, group : group + 1])
+        return text_embed + embed
+
+    cache["input_embeds"] = input_embeds_step
+    return input_embeds_step
 
 
 def make_talker_decode(talker: Any) -> Callable[..., tuple[mx.array, mx.array, list, list]]:
