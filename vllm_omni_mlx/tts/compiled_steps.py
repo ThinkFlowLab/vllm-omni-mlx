@@ -64,17 +64,39 @@ EAGER_STREAM = os.environ.get("VLLM_OMNI_TTS_EAGER_STREAM", "") not in ("", "0",
 # per-model closure caches: mx.compile traces are global per function
 # object, so building a new closure per request would retrace every time.
 # nn.Modules are unhashable, so key on id() and keep a weakref to detect a
-# freed model (its id may be reused) — the cache never pins a model alive
+# freed model (its id may be reused). The weakref carries a death callback
+# that drops the entry — the cached closures themselves strongly reference
+# the model's layers (captured constants), so without the drop a released
+# checkpoint's weights would stay pinned (leak across model reloads and
+# single-process multi-model test runs)
 _CLOSURE_CACHE: dict[int, tuple[weakref.ref[Any], dict[tuple, Callable]]] = {}
 
 
 def _closures_for(module: Any) -> dict[tuple, Callable]:
-    entry = _CLOSURE_CACHE.get(id(module))
+    key = id(module)
+    entry = _CLOSURE_CACHE.get(key)
     if entry is not None and entry[0]() is module:
         return entry[1]
     sub: dict[tuple, Callable] = {}
-    _CLOSURE_CACHE[id(module)] = (weakref.ref(module), sub)
+
+    def _drop(_ref: Any, key: int = key, sub: dict = sub) -> None:
+        current = _CLOSURE_CACHE.get(key)
+        if current is not None and current[1] is sub:
+            # only drop OUR entry: a replacement module may have reused the id
+            del _CLOSURE_CACHE[key]
+
+    _CLOSURE_CACHE[key] = (weakref.ref(module, _drop), sub)
     return sub
+
+
+def _bound_family(cache: dict, family: str, cap: int = 8) -> None:
+    """Evict oldest same-family closures past ``cap`` — each distinct sampler
+    configuration is its own compiled trace, so an unbounded parameter space
+    (per-request temperature/top_k/top_p overrides) would grow the cache
+    without limit; 8 live configurations is generous for real traffic."""
+    keys = [k for k in cache if k[0] == family]
+    for k in keys[: max(0, len(keys) - cap + 1)]:
+        del cache[k]
 
 
 def _rotate_half(x: mx.array, half: int) -> mx.array:
@@ -192,6 +214,7 @@ def make_predictor_frame(
     key = ("predictor", temperature, top_k, top_p)
     if key in cache:
         return cache[key]
+    _bound_family(cache, "predictor")
 
     model = predictor.model
     proj = predictor.small_to_mtp_projection
@@ -300,6 +323,7 @@ def make_talker_sampler(
     if key in cache:
         return cache[key]
 
+    _bound_family(cache, "sampler")
     vocab = model.config.talker_config.vocab_size
     suppress = mx.array(suppress_tokens, dtype=mx.uint32) if suppress_tokens else None
 
