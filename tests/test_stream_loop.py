@@ -170,9 +170,12 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
 
     def test_greedy_parity_with_mlx_audio_loop(self):
         # the vendored loop vs mlx-audio's generate_custom_voice, greedy,
-        # same seed: identical sampler draws (the loop is token-exact), audio
-        # within the boundary envelope (bucket quantization + padded
-        # remainder shift the vocode boundaries), both above the HNR floor
+        # same seed: identical sampler draws (16 per frame — both loops run
+        # eager here), audio within the boundary envelope (bucket
+        # quantization + padded remainder shift the vocode boundaries),
+        # both above the HNR floor.
+        from vllm_omni_mlx.tts import stream_loop
+
         def ours():
             mx.random.seed(21)
             return mx.concatenate([c.reshape(-1) for c in generate_custom_voice_frames(
@@ -185,7 +188,15 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
                 text=EN, speaker="vivian", temperature=0.0, max_tokens=512,
                 stream=True, streaming_interval=0.5) if r.audio is not None and r.audio.size])
 
-        ours_draws, ours_audio = _taped(self.model, ours)
+        # the eager loop is the token-exact reference against mlx-audio's;
+        # the compiled fast path's rare fp16 near-tie flips (fusion FMA
+        # contraction, ~1 frame in 45 greedy — see test_compiled_drift below)
+        # are kept out of this assertion on purpose
+        was, stream_loop.EAGER_STREAM = stream_loop.EAGER_STREAM, True
+        try:
+            ours_draws, ours_audio = _taped(self.model, ours)
+        finally:
+            stream_loop.EAGER_STREAM = was
         ref_draws, ref_audio = _taped(self.model, reference)
         self.assertEqual(ours_draws, ref_draws)
         n = min(ours_audio.shape[0], ref_audio.shape[0])
@@ -194,6 +205,56 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
         for label, audio in (("ours", ours_audio), ("mlx-audio", ref_audio)):
             hnr = int16_pcm_hnr_db(_pcm16(audio[:n]))
             self.assertGreater(hnr, CLEAN_VOICE_HNR_DB, f"{label}: HNR {hnr:.2f} dB below floor")
+
+    def test_compiled_drift_bounded(self):
+        # compiled fast path vs the eager loop, greedy, same seed: the two
+        # agree until the first fp16 near-tie argmax flip under compile
+        # fusion (FMA contraction reorders rounding by ~1 ULP; measured 1
+        # frame in 45 on this seed, cascading only within that frame's
+        # predictor groups), after which tokens/audio are legitimately
+        # different. Bounds: no divergence in the first 5 frames, HNR above
+        # the floor, duration within 2x of the eager run.
+        from vllm_omni_mlx.tts import stream_loop
+
+        def run(eager: bool):
+            was, stream_loop.EAGER_STREAM = stream_loop.EAGER_STREAM, eager
+            try:
+                mx.random.seed(21)
+                draws: list[int] = []
+                orig = self.model._sample_token
+
+                def sampler(logits, **kwargs):
+                    token = orig(logits, **kwargs)
+                    draws.append(int(token.reshape(-1)[0].item()))
+                    return token
+
+                self.model._sample_token = sampler
+                try:
+                    audio = mx.concatenate([c.reshape(-1) for c in generate_custom_voice_frames(
+                        self.model, text=EN, speaker="vivian", temperature=0.0, max_tokens=512,
+                        initial_frames=2, chunk_frames=6)])
+                finally:
+                    self.model._sample_token = orig
+            finally:
+                stream_loop.EAGER_STREAM = was
+            return draws, audio
+
+        eager_draws, _ = run(True)
+        compiled_draws, compiled_audio = run(False)
+        eager_talker = eager_draws[::16]  # talker draws, one per frame
+        diverged = next(
+            (i for i, (a, b) in enumerate(zip(eager_talker, compiled_draws)) if a != b), None
+        )
+        self.assertTrue(
+            diverged is None or diverged >= 5,
+            f"compiled path diverged too early (frame {diverged})",
+        )
+        hnr = int16_pcm_hnr_db(_pcm16(compiled_audio))
+        self.assertGreater(hnr, CLEAN_VOICE_HNR_DB, f"HNR {hnr:.2f} dB below floor")
+        self.assertLess(
+            abs(compiled_audio.shape[0] - len(eager_talker) * SAMPLES_PER_FRAME),
+            2 * len(eager_talker) * SAMPLES_PER_FRAME,
+        )
 
     def test_streamed_speech_hnr_above_floor(self):
         audio = mx.concatenate(

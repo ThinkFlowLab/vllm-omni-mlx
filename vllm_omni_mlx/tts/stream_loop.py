@@ -19,7 +19,17 @@ Talker, CodePredictor, Code2Wav), with two additions:
   power of two ≤ ``chunk_frames`` and the final remainder is padded to the
   nearest bucket then trimmed, so the mx.compile'd ``streaming_step``
   traces at most two shapes per configuration instead of one per distinct
-  remainder (each new shape costs a seconds-long retrace).
+  remainder (each new shape costs a seconds-long retrace);
+- compiled per-frame decode closures (#65): the 15 predictor micro-steps
+  (+ their sampling) run as ONE mx.compile'd call — the predictor's cache
+  resets every frame, so its state is frame-local and the closure is
+  fixed-shape forever — and the talker decode runs compiled shapeless with
+  the KV cache as arrays (the prompt prefill stays eager, then its cache
+  is transplanted). Both are bit-exact against the eager paths on
+  identical inputs; end-to-end greedy streams may still diverge on rare
+  fp16 near-ties under fusion (see tts.compiled_steps).
+  ``VLLM_OMNI_TTS_EAGER_STREAM=1`` keeps the uncompiled
+  mlx-audio-mirror loop for A/B and debugging.
 """
 
 from __future__ import annotations
@@ -29,6 +39,11 @@ from typing import Any, Iterator
 import mlx.core as mx
 
 from .code_predictor import CodePredictor
+from .compiled_steps import (
+    EAGER_STREAM,
+    make_predictor_frame,
+    make_talker_decode,
+)
 from .config import TTSConfig
 from .prompt_embeds import PromptEmbeds
 from .talker import Talker
@@ -97,6 +112,25 @@ def generate_custom_voice_frames(
     generated_token_ids: list[int] = []
     trailing_idx = 0
     decoded_frames = 0
+    # compiled-path state: the cache as arrays after the eager prefill
+    keys = values = None
+    position = 0
+
+    # compiled fast path (#65): closures are cached per model, so building
+    # them here reuses the trace across requests
+    compiled = not EAGER_STREAM
+    decode_step = make_talker_decode(model.talker) if compiled else None
+    predictor_frame = (
+        make_predictor_frame(
+            model.talker.code_predictor,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            base_embedding=model.talker.get_input_embeddings(),
+        )
+        if compiled
+        else None
+    )
 
     initial_frames = initial_frames_bucket(initial_frames, chunk_frames)
     decoder = model.speech_tokenizer.decoder
@@ -123,7 +157,20 @@ def generate_custom_voice_frames(
 
     try:
         for _ in range(max_tokens):
-            logits, hidden = model.talker(input_embeds, cache=cache)
+            if keys is None:
+                # first frame doubles as the prompt prefill through
+                # mlx-audio's eager path; transplant its cache into the
+                # compiled decode's array state on the way out
+                logits, hidden = model.talker(input_embeds, cache=cache)
+                if compiled:
+                    position = cache[0].offset
+                    keys = [c.keys[..., :position, :] for c in cache]
+                    values = [c.values[..., :position, :] for c in cache]
+            else:
+                logits, hidden, keys, values = decode_step(
+                    input_embeds, mx.array([position], dtype=mx.int32), keys, values
+                )
+                position += 1
 
             next_token = model._sample_token(
                 logits,
@@ -136,30 +183,35 @@ def generate_custom_voice_frames(
             )
             is_eos = next_token[0, 0] == eos_token_id
 
-            code_tokens = [next_token]
-            code_hidden = hidden[:, -1:, :]
-            for c in code_cache:  # reset in place, as mlx-audio's loop does
-                c.keys = None
-                c.values = None
-                c.offset = 0
-            for code_idx in range(predictor.num_code_groups - 1):
-                if code_idx == 0:
-                    code_0_embed = model.talker.get_input_embeddings()(next_token)
-                    code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
-                else:
-                    code_input = predictor.residual_embeddings[code_idx - 1](code_tokens[-1])
-                code_logits = predictor.step(code_input, code_cache, code_idx)
-                code_tokens.append(
-                    model._sample_token(code_logits, temperature=temperature, top_k=top_k, top_p=top_p)
-                )
-            all_codes = mx.concatenate(code_tokens, axis=1)
+            if compiled:
+                all_codes = predictor_frame(hidden[:, -1:, :], next_token)
+                code_token_list = [all_codes[:, i : i + 1] for i in range(all_codes.shape[1])]
+            else:
+                code_tokens = [next_token]
+                code_hidden = hidden[:, -1:, :]
+                for c in code_cache:  # reset in place, as mlx-audio's loop does
+                    c.keys = None
+                    c.values = None
+                    c.offset = 0
+                for code_idx in range(predictor.num_code_groups - 1):
+                    if code_idx == 0:
+                        code_0_embed = model.talker.get_input_embeddings()(next_token)
+                        code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
+                    else:
+                        code_input = predictor.residual_embeddings[code_idx - 1](code_tokens[-1])
+                    code_logits = predictor.step(code_input, code_cache, code_idx)
+                    code_tokens.append(
+                        model._sample_token(code_logits, temperature=temperature, top_k=top_k, top_p=top_p)
+                    )
+                all_codes = mx.concatenate(code_tokens, axis=1)
+                code_token_list = code_tokens
 
             if trailing_idx < trailing_text_hidden.shape[1]:
                 text_embed = trailing_text_hidden[:, trailing_idx : trailing_idx + 1, :]
                 trailing_idx += 1
             else:
                 text_embed = tts_pad_embed
-            input_embeds = text_embed + talker.codec_embeds(code_tokens)
+            input_embeds = text_embed + talker.codec_embeds(code_token_list)
 
             # single sync point per frame, as mlx-audio's loop does
             mx.eval(input_embeds, is_eos)
@@ -252,6 +304,24 @@ def generate_icl_frames(
     generated_token_ids: list[int] = []
     trailing_idx = 0
     decoded_frames = 0
+    # compiled-path state: the cache as arrays after the eager prefill
+    keys = values = None
+    position = 0
+
+    # compiled fast path (#65) — same closures as the CustomVoice loop
+    compiled = not EAGER_STREAM
+    decode_step = make_talker_decode(model.talker) if compiled else None
+    predictor_frame = (
+        make_predictor_frame(
+            model.talker.code_predictor,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            base_embedding=model.talker.get_input_embeddings(),
+        )
+        if compiled
+        else None
+    )
 
     initial_frames = initial_frames_bucket(initial_frames, chunk_frames)
     decoder = model.speech_tokenizer.decoder
@@ -275,7 +345,20 @@ def generate_icl_frames(
 
     try:
         for _ in range(max_tokens):
-            logits, hidden = model.talker(input_embeds, cache=cache)
+            if keys is None:
+                # first frame doubles as the ICL prefill (reference audio +
+                # text) through mlx-audio's eager path; transplant its cache
+                # into the compiled decode's array state on the way out
+                logits, hidden = model.talker(input_embeds, cache=cache)
+                if compiled:
+                    position = cache[0].offset
+                    keys = [c.keys[..., :position, :] for c in cache]
+                    values = [c.values[..., :position, :] for c in cache]
+            else:
+                logits, hidden, keys, values = decode_step(
+                    input_embeds, mx.array([position], dtype=mx.int32), keys, values
+                )
+                position += 1
 
             next_token = model._sample_token(
                 logits,
@@ -288,30 +371,35 @@ def generate_icl_frames(
             )
             is_eos = next_token[0, 0] == eos_token_id
 
-            code_tokens = [next_token]
-            code_hidden = hidden[:, -1:, :]
-            for c in code_cache:
-                c.keys = None
-                c.values = None
-                c.offset = 0
-            for code_idx in range(predictor.num_code_groups - 1):
-                if code_idx == 0:
-                    code_0_embed = model.talker.get_input_embeddings()(next_token)
-                    code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
-                else:
-                    code_input = predictor.residual_embeddings[code_idx - 1](code_tokens[-1])
-                code_logits = predictor.step(code_input, code_cache, code_idx)
-                code_tokens.append(
-                    model._sample_token(code_logits, temperature=temperature, top_k=top_k, top_p=top_p)
-                )
-            all_codes = mx.concatenate(code_tokens, axis=1)
+            if compiled:
+                all_codes = predictor_frame(hidden[:, -1:, :], next_token)
+                code_token_list = [all_codes[:, i : i + 1] for i in range(all_codes.shape[1])]
+            else:
+                code_tokens = [next_token]
+                code_hidden = hidden[:, -1:, :]
+                for c in code_cache:
+                    c.keys = None
+                    c.values = None
+                    c.offset = 0
+                for code_idx in range(predictor.num_code_groups - 1):
+                    if code_idx == 0:
+                        code_0_embed = model.talker.get_input_embeddings()(next_token)
+                        code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
+                    else:
+                        code_input = predictor.residual_embeddings[code_idx - 1](code_tokens[-1])
+                    code_logits = predictor.step(code_input, code_cache, code_idx)
+                    code_tokens.append(
+                        model._sample_token(code_logits, temperature=temperature, top_k=top_k, top_p=top_p)
+                    )
+                all_codes = mx.concatenate(code_tokens, axis=1)
+                code_token_list = code_tokens
 
             if trailing_idx < trailing_text_hidden.shape[1]:
                 text_embed = trailing_text_hidden[:, trailing_idx : trailing_idx + 1, :]
                 trailing_idx += 1
             else:
                 text_embed = tts_pad_embed
-            input_embeds = text_embed + talker.codec_embeds(code_tokens)
+            input_embeds = text_embed + talker.codec_embeds(code_token_list)
 
             mx.eval(input_embeds, is_eos)
             if is_eos.item():
@@ -358,10 +446,20 @@ def synthesize_clone_stream(
     )
 
 
-def prewarm_streaming(model: Any, interval: float, initial_interval: float) -> "tuple[int, ...]":
+def prewarm_streaming(
+    model: Any,
+    interval: float,
+    initial_interval: float,
+    *,
+    temperature: float = 0.9,
+    top_k: int = 50,
+    top_p: float = 1.0,
+) -> "tuple[int, ...]":
     """Trace the compiled streaming_step shapes this stream configuration
     will hit (initial bucket + steady chunk), then leave the decoder state
-    clean; returns the traced shapes. First real request then pays no
+    clean; returns the traced shapes. Also traces the compiled decode
+    closures on dummy state (serving-default sampler params; other
+    configurations trace on first use). First real request then pays no
     compile; failures are the caller's to tolerate (first request degrades
     to tracing on demand). Per-request interval overrides beyond this pair
     still trace on first use."""
@@ -373,5 +471,45 @@ def prewarm_streaming(model: Any, interval: float, initial_interval: float) -> "
     for frames in frame_counts:
         mx.eval(decoder.streaming_step(mx.zeros((1, num_quantizers, frames), dtype=mx.int32)))
     decoder.reset_streaming_state()
+
+    if not EAGER_STREAM:
+        _prewarm_decode_closures(model, temperature, top_k, top_p)
     mx.clear_cache()
     return frame_counts
+
+
+def _prewarm_decode_closures(model: Any, temperature: float, top_k: int, top_p: float) -> None:
+    """Trace the compiled talker decode + predictor frame on dummy state
+    (outputs are garbage and discarded). One 1-token eager forward supplies
+    real k/v arrays so the talker closure traces in its serving dtype;
+    dtypes matter — mx.compile retraces on dtype change even shapeless."""
+    hidden_size = model.config.talker_config.hidden_size
+    embed_dtype = model.talker.get_input_embeddings()(
+        mx.zeros((1, 1), dtype=mx.uint32)
+    ).dtype
+
+    decode_step = make_talker_decode(model.talker)
+    dummy_cache = model.talker.make_cache()
+    model.talker(mx.zeros((1, 1, hidden_size), dtype=embed_dtype), cache=dummy_cache)
+    length = dummy_cache[0].offset
+    keys = [c.keys[..., :length, :] for c in dummy_cache]
+    values = [c.values[..., :length, :] for c in dummy_cache]
+    logits, hidden, _, _ = decode_step(
+        mx.zeros((1, 1, hidden_size), dtype=embed_dtype),
+        mx.array([length], dtype=mx.int32),
+        keys,
+        values,
+    )
+    mx.eval(logits, hidden)
+
+    predictor_frame = make_predictor_frame(
+        model.talker.code_predictor,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        base_embedding=model.talker.get_input_embeddings(),
+    )
+    codes = predictor_frame(
+        mx.zeros((1, 1, hidden_size), dtype=embed_dtype), mx.zeros((1, 1), dtype=mx.uint32)
+    )
+    mx.eval(codes)
