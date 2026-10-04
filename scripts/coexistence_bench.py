@@ -40,7 +40,7 @@ def main() -> int:
     from vllm_omni_mlx.backends import load_backend
     from vllm_omni_mlx.schemas import UnifiedRequest, Message, Part
     from vllm_omni_mlx.tts.config import TTSConfig, load_tts_model
-    from vllm_omni_mlx.tts.generate import synthesize
+    from vllm_omni_mlx.tts.stream_loop import prewarm_streaming, synthesize_stream
 
     print(f"loading chat {args.chat_model} ...", flush=True)
     backend = load_backend(args.chat_model)
@@ -70,11 +70,13 @@ def main() -> int:
         return ttft, rate
 
     def speech_once():
+        # the serving streaming path (stream_loop fast path — what
+        # /v1/audio/speech stream:true runs), not the buffered generate
         t0 = time.perf_counter()
         ttfa = None
         arrivals = []
         sizes = []
-        for chunk in synthesize(tts, config, SPEECH_TEXT, speaker="vivian", streaming_interval=args.interval, seed=7):
+        for chunk in synthesize_stream(tts, config, SPEECH_TEXT, speaker="vivian", streaming_interval=args.interval, seed=7):
             now = time.perf_counter()
             if ttfa is None:
                 ttfa = now - t0
@@ -82,9 +84,10 @@ def main() -> int:
             sizes.append(chunk.size)
         return t0, ttfa, arrivals, sizes
 
-    # warm both paths (compile)
+    # warm both paths (compile + closure traces)
     chat_once()
-    for _ in synthesize(tts, config, "Warmup.", speaker="vivian"):
+    prewarm_streaming(tts, args.interval, args.interval / 2.5)
+    for _ in synthesize_stream(tts, config, "Warmup.", speaker="vivian"):
         pass
 
     # 1) chat alone
