@@ -17,7 +17,7 @@ import mlx.core as mx
 from .config import TTSConfig
 from .generate import MAX_REF_SECONDS, decode_ref_audio, synthesize, synthesize_clone, wav_bytes
 from .prompt_embeds import PromptEmbeds
-from .stream_loop import synthesize_stream
+from .stream_loop import synthesize_clone_stream, synthesize_stream
 from .variants import CUSTOM_VOICE, SMALL_SIZE, model_size, model_variant, require_served
 
 # stream-path chunk default (#40's measured knee; the buffered path keeps
@@ -91,7 +91,9 @@ class TTSService:
         streaming_interval: Optional[float] = None,
         streaming_initial_interval: Optional[float] = None,
     ) -> "Iterator[bytes]":
-        """Yield 16-bit PCM mono chunks (24 kHz) as they are generated.
+        """Yield 16-bit PCM mono chunks (24 kHz) as they are generated —
+        preset speakers or (on Base checkpoints, #50) a cloning ``voice``
+        object.
 
         The service lock is held for the whole stream (batch-1); a client
         disconnect closes the generator and releases it at the next chunk.
@@ -101,10 +103,29 @@ class TTSService:
         4-bit model — see #39's sweep). streaming_initial_interval (default
         0.2 s) is the #39 fast path: the first chunk is emitted as soon as
         that much audio exists, independent of the steady chunk size, so
-        TTFA is not floored by streaming_interval.
+        TTFA is not floored by streaming_interval. For cloning, the
+        reference clip is decoded and validated before the stream starts —
+        request errors never wait on the lock.
         """
         if isinstance(voice, dict):
-            raise ValueError("streaming voice cloning is not supported yet — #50")
+            ref_audio, ref_text = self._clone_inputs(input, voice, speed)
+            interval = DEFAULT_STREAM_INTERVAL if streaming_interval is None else streaming_interval
+            if not 0.0 < interval <= 10.0:
+                raise ValueError("streaming_interval must be in (0, 10] seconds")
+            overrides = {"streaming_interval": interval}
+            if streaming_initial_interval is not None:
+                if not 0.0 < streaming_initial_interval <= 10.0:
+                    raise ValueError("streaming_initial_interval must be in (0, 10] seconds")
+                overrides["streaming_initial_interval"] = streaming_initial_interval
+
+            def clone_stream() -> Iterator[bytes]:
+                with self._lock:
+                    for chunk in synthesize_clone_stream(
+                        self._model, self.config, input, ref_audio, ref_text, **overrides
+                    ):
+                        yield _pcm16(chunk)
+
+            return clone_stream()
         overrides = self._validated_overrides(input, voice, speed, instructions, language)
         interval = DEFAULT_STREAM_INTERVAL if streaming_interval is None else streaming_interval
         if not 0.0 < interval <= 10.0:
@@ -122,14 +143,20 @@ class TTSService:
 
         return stream()
 
-    def _clone_inputs(self, input: str, voice: dict, speed: float) -> tuple["mx.array", str]:
-        """Validate a cloning ``voice`` object and decode the reference clip
-        (base64 → 24 kHz mono) outside the service lock — decode errors and
-        caps are request errors, not generation failures."""
+    @staticmethod
+    def _require_valid_request(input: str, speed: float) -> None:
+        """Checks shared by every generation path (#54 review nit: one copy,
+        three callers)."""
         if not input or not input.strip():
             raise ValueError("input must be a non-empty string")
         if speed != 1.0:
             raise ValueError("speed != 1.0 is not supported yet")
+
+    def _clone_inputs(self, input: str, voice: dict, speed: float) -> tuple["mx.array", str]:
+        """Validate a cloning ``voice`` object and decode the reference clip
+        (base64 → 24 kHz mono) outside the service lock — decode errors and
+        caps are request errors, not generation failures."""
+        self._require_valid_request(input, speed)
         require_served(self._variant, path="clone")
         unknown = set(voice) - {"ref_audio", "ref_text"}
         if unknown:
@@ -148,10 +175,7 @@ class TTSService:
         return ref_audio, ref_text
 
     def _validated_overrides(self, input, voice, speed, instructions, language) -> dict:
-        if not input or not input.strip():
-            raise ValueError("input must be a non-empty string")
-        if speed != 1.0:
-            raise ValueError("speed != 1.0 is not supported yet")
+        self._require_valid_request(input, speed)
         if self._variant != CUSTOM_VOICE:
             # base (no spk_id presets, cloning-only) and voice_design need
             # generation paths this build doesn't have yet — reject with the

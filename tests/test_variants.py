@@ -63,9 +63,14 @@ class EnsureServedTest(unittest.TestCase):
         model = stub_model("base")
         self.assertEqual(variants.ensure_served(model, path="clone"), "base")
 
-    def test_custom_voice_clone_path_needs_base(self):
-        with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
-            variants.ensure_served(stub_model("custom_voice", PRESETS), path="clone")
+    def test_base_clone_stream_path_passes(self):
+        model = stub_model("base")
+        self.assertEqual(variants.ensure_served(model, path="clone_stream"), "base")
+
+    def test_custom_voice_clone_paths_need_base(self):
+        for path in ("clone", "clone_stream"):
+            with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
+                variants.ensure_served(stub_model("custom_voice", PRESETS), path=path)
 
     def test_unknown_path_raises(self):
         with self.assertRaisesRegex(ValueError, "unknown generation path"):

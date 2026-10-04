@@ -170,8 +170,10 @@ The clip is decoded and resampled to 24 kHz mono server-side (any format
 miniaudio/ffmpeg reads); keep it 0.5–30 s of clean speech. Base checkpoints
 have no preset voices (`GET /v1/audio/voices` returns `[]`) and CustomVoice
 checkpoints ignore cloning — send the form matching your checkpoint.
-Buffered only for now; streaming cloning is tracked in
-[#50](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/50).
+Cloning streams too: `stream: true` + the voice object emits chunked PCM on
+the same first-chunk fast path as presets (the vendored loop is
+token-exact against mlx-audio's ICL loop; chunked audio differs from the
+buffered WAV at waveform level by nature — the vocoder is stateful).
 
 The 0.6B CustomVoice variant
 (`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit`) serves the same

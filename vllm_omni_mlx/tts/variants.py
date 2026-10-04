@@ -18,7 +18,7 @@ path               served types    entry
 preset (buffered)  custom_voice    :func:`generate.synthesize`
 preset (streaming) custom_voice    :func:`stream_loop.synthesize_stream`
 clone (buffered)   base            :func:`generate.synthesize_clone`
-clone (streaming)  — none yet      #50
+clone (streaming)  base            :func:`stream_loop.synthesize_clone_stream`
 =================  ==============  =====================================
 """
 
@@ -42,7 +42,8 @@ KNOWN = (BASE, CUSTOM_VOICE, VOICE_DESIGN)
 #: generation path name → the types this build synthesizes on it
 SERVED_BY_PATH = {
     "preset": (CUSTOM_VOICE,),
-    "clone": (BASE,),  # buffered only; streaming cloning is #50
+    "clone": (BASE,),  # buffered
+    "clone_stream": (BASE,),  # streaming (#50)
 }
 
 #: kept from #47 for the preset paths — ``SERVED_BY_PATH["preset"]``
@@ -51,14 +52,19 @@ SERVED = SERVED_BY_PATH["preset"]
 _TRACKING = {
     (BASE, "preset"): (
         "Base models have no preset voices — send voice as an object with "
-        "ref_audio/ref_text to clone a voice (buffered #49; streaming #50)"
+        "ref_audio/ref_text to clone a voice (buffered and streaming, #49/#50)"
     ),
     (CUSTOM_VOICE, "clone"): (
         "voice cloning needs a Base checkpoint; CustomVoice serves preset "
         "voices (send voice as a speaker string)"
     ),
+    (CUSTOM_VOICE, "clone_stream"): (
+        "voice cloning needs a Base checkpoint; CustomVoice serves preset "
+        "voices (send voice as a speaker string)"
+    ),
     (VOICE_DESIGN, "preset"): "VoiceDesign models are not served by this build yet (text-described voices — #46)",
     (VOICE_DESIGN, "clone"): "VoiceDesign models are not served by this build yet (text-described voices — #46)",
+    (VOICE_DESIGN, "clone_stream"): "VoiceDesign models are not served by this build yet (text-described voices — #46)",
 }
 
 
