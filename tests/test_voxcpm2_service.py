@@ -13,6 +13,7 @@ import wave
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import unittest
+import unittest.mock
 
 import mlx.core as mx
 from starlette.testclient import TestClient
@@ -116,8 +117,29 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.model_ref, "mlx-community/VoxCPM2-4bit")
 
 
+
+
+def _fake_frames(model, config, text, instruct=None, ref_audio=None, ref_text=None, compiled=True):
+    """Stub stand-in for voxcpm2_loop.generate_frames (#79): forwards to the
+    stub model's generate with the config knobs, so call-recording tests keep
+    working on the default (vendored-loop) route."""
+    for result in model.generate(
+        text=text, instruct=instruct, ref_audio=ref_audio, ref_text=ref_text,
+        max_tokens=config.max_tokens, inference_timesteps=config.inference_timesteps,
+        cfg_value=config.cfg_value, warmup_patches=config.warmup_patches,
+    ):
+        if result.audio is not None and result.audio.size:
+            yield result.audio
+
+
+def _patch_loop_for_stubs():
+    return unittest.mock.patch("vllm_omni_mlx.tts.voxcpm2_loop.generate_frames", _fake_frames)
+
+
 class ServiceSurfaceTest(unittest.TestCase):
     def setUp(self):
+        _patch_loop_for_stubs().start()
+        self.addCleanup(unittest.mock.patch.stopall)
         self.service, self.model = _stub_service()
 
     def test_duck_type_surface(self):
@@ -216,6 +238,8 @@ class CloneDecodeTest(unittest.TestCase):
     mlx-audio's decoder, no checkpoint."""
 
     def setUp(self):
+        _patch_loop_for_stubs().start()
+        self.addCleanup(unittest.mock.patch.stopall)
         self.service, self.model = _stub_service()
 
     def test_clone_passes_ref_waveform(self):
@@ -262,6 +286,8 @@ class VoxCPM2RoutesTest(unittest.TestCase):
     voice-object cloning through the JSON API."""
 
     def setUp(self):
+        _patch_loop_for_stubs().start()
+        self.addCleanup(unittest.mock.patch.stopall)
         self.service, self.model = _stub_service()
         self.client = TestClient(create_app(tts_service=self.service))
 
@@ -304,3 +330,34 @@ class VoxCPM2RoutesTest(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "audio/wav")
         with wave.open(io.BytesIO(response.content)) as wav:
             self.assertEqual(wav.getframerate(), SR)
+
+
+class SynthesizeRoutingTest(unittest.TestCase):
+    """#79: synthesize rides the vendored compiled loop by default and the
+    VLLM_OMNI_VOXCPM2_EAGER env selects the library generate — verified with
+    stubs, no checkpoint (the weight-gated parity battery covers the real
+    numerics)."""
+
+    def setUp(self):
+        unittest.mock.patch("vllm_omni_mlx.tts.voxcpm2_loop.generate_frames").start()
+        self.addCleanup(unittest.mock.patch.stopall)
+        self.service, self.model = _stub_service()
+
+    def test_default_routes_to_the_vendored_loop(self):
+        from vllm_omni_mlx.tts import voxcpm2, voxcpm2_loop
+
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VLLM_OMNI_VOXCPM2_EAGER", None)
+            list(voxcpm2.synthesize(self.service._model, self.service.config, "hello", instruct="a voice"))
+        voxcpm2_loop.generate_frames.assert_called_once()
+        kwargs = voxcpm2_loop.generate_frames.call_args.kwargs
+        self.assertEqual(kwargs["instruct"], "a voice")
+        self.assertEqual(self.model.calls, [], "library generate must not run on the default path")
+
+    def test_eager_env_routes_to_library_generate(self):
+        from vllm_omni_mlx.tts import voxcpm2, voxcpm2_loop
+
+        with unittest.mock.patch.dict(os.environ, {"VLLM_OMNI_VOXCPM2_EAGER": "1"}):
+            list(voxcpm2.synthesize(self.service._model, self.service.config, "hello"))
+        self.assertEqual(len(self.model.calls), 1, "escape env must use the library generate")
+        self.assertFalse(voxcpm2_loop.generate_frames.called)

@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import concurrent.futures
 import io
-import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -98,17 +98,12 @@ def load_voxcpm2_model(config: VoxCPM2Config) -> Any:
         ) from exc
     model = load_model(config.model_ref)
     _unpin_cpu_buffers(model)
-    if not os.environ.get("VLLM_OMNI_VOXCPM2_EAGER"):
-        # the model's own built-in (DiT estimator + LM/encoder layers) —
-        # mlx-audio never calls it. Measured −6% p50 RTF (2.06 → 1.94, this
-        # M4): the per-patch step is launch-bound in the CFM solver loop,
-        # not inside these modules, so the win is small but free; the first
-        # request pays the trace build (~4 s). Set VLLM_OMNI_VOXCPM2_EAGER=1
-        # to serve eager (same escape shape as the Qwen3-TTS stream path).
-        try:
-            model.compile_model()
-        except Exception:
-            pass  # a compile failure must not take serving down
+    # no compile_model() here: the default serving path is the vendored
+    # compiled loop (tts/voxcpm2_loop.py), whose closures must wrap the RAW
+    # modules — compile_model() replaces them with opaque compiled wrappers
+    # (and a compiled fn inside another trace is a nested compile, which
+    # mx.compile rejects). VLLM_OMNI_VOXCPM2_EAGER=1 selects the plain
+    # library path with nothing compiled.
     return model
 
 
@@ -176,8 +171,18 @@ def synthesize(
     ``ref_text`` is accepted for API parity and ignored — the reference
     mode conditions on the clip alone. ``instruct`` selects voice design
     (mlx-audio prepends ``(description)`` to the text).
+
+    The default path is the vendored compiled loop (tts/voxcpm2_loop.py,
+    #79); VLLM_OMNI_VOXCPM2_EAGER=1 falls back to the library generate.
     """
+    from . import voxcpm2_loop  # lazy: the loop imports this module
+
     cfg = config.with_overrides(instruct=instruct)
+    if not voxcpm2_loop.eager_escape():
+        yield from voxcpm2_loop.generate_frames(
+            model, cfg, text, instruct=cfg.instruct, ref_audio=ref_audio, ref_text=ref_text
+        )
+        return
     for result in model.generate(
         text=text,
         instruct=cfg.instruct,
@@ -208,7 +213,16 @@ def wav_bytes(chunks: Iterator[mx.array], sample_rate: int) -> bytes:
 class VoxCPM2Service:
     """Serving surface for /v1/audio/* — duck-types :class:`TTSService`
     (name / model_type / voices / sample_rate / speech_bytes / speech_stream)
-    so the server takes either without a family branch of its own."""
+    so the server takes either without a family branch of its own.
+
+    All synthesis runs on one dedicated worker thread: MLX compiled
+    functions are thread-bound (a closure traced on one thread refuses to
+    evaluate on another — "There is no Stream(gpu, 0) in current thread"),
+    so the vendored loop's closures are traced on that thread's first
+    request and evaluated there for the process lifetime. The eager library
+    path has no such constraint but rides the same worker (batch-1: the
+    lock serializes anyway).
+    """
 
     def __init__(self, model: Any, config: VoxCPM2Config | None = None):
         if not is_voxcpm2_model(model):
@@ -218,6 +232,13 @@ class VoxCPM2Service:
         self._model = model
         self.config = config or VoxCPM2Config()
         self._lock = threading.Lock()
+        self._pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="voxcpm2-gen"
+        )
+
+    def _on_generation_thread(self, fn):
+        """Run `fn` (blocking) on the dedicated synthesis thread."""
+        return self._pool.submit(fn).result()
 
     @property
     def name(self) -> str:
@@ -249,21 +270,31 @@ class VoxCPM2Service:
         """Synthesize `input` to (payload, content_type). `voice` is "default"
         (zero-shot) or a cloning object ``{"ref_audio": <base64>, "ref_text":
         optional}``; `instructions` designs a voice from a text description.
-        Raises ValueError on invalid requests; generation is serialized
-        under the service lock."""
+        Raises ValueError on invalid requests; generation is serialized on
+        the dedicated synthesis thread (see the class docstring)."""
         if isinstance(voice, dict):
             ref_audio, ref_text = self._clone_inputs(input, voice, speed)
+            instruct = None
+        else:
+            ref_audio = None
+            ref_text = None
+            instruct = self._validated(input, voice, speed, instructions, language)
+
+        def generate() -> list[mx.array]:
             with self._lock:
-                chunks = synthesize(self._model, self.config, input, ref_audio=ref_audio, ref_text=ref_text)
-                if response_format == "wav":
-                    return wav_bytes(chunks, self.sample_rate), "audio/wav"
-                return b"".join(_pcm16(chunk) for chunk in chunks), "audio/pcm"
-        instruct = self._validated(input, voice, speed, instructions, language)
-        with self._lock:
-            chunks = synthesize(self._model, self.config, input, instruct=instruct)
-            if response_format == "wav":
-                return wav_bytes(chunks, self.sample_rate), "audio/wav"
-            return b"".join(_pcm16(chunk) for chunk in chunks), "audio/pcm"
+                chunks = list(
+                    synthesize(self._model, self.config, input, instruct=instruct, ref_audio=ref_audio, ref_text=ref_text)
+                )
+            # materialize HERE: the audio is a lazy graph over thread-bound
+            # compiled closures — forcing it on this (generation) thread
+            # keeps the caller free of stream-table dependencies
+            mx.eval(*chunks)
+            return chunks
+
+        chunks = self._on_generation_thread(generate)
+        if response_format == "wav":
+            return wav_bytes(chunks, self.sample_rate), "audio/wav"
+        return b"".join(_pcm16(chunk) for chunk in chunks), "audio/pcm"
 
     def speech_stream(
         self,
@@ -280,7 +311,7 @@ class VoxCPM2Service:
         The chunks come from the finished buffer — mlx-audio's generate is
         single-yield, so first audio lands when synthesis completes (#71's
         honest baseline; incremental streaming is follow-up loop work).
-        The service lock is held for the whole stream (batch-1).
+        Synthesis runs on the dedicated thread; slicing is caller-side.
         """
         interval = self.config.streaming_interval if streaming_interval is None else streaming_interval
         if not 0.0 < interval <= 10.0:
@@ -293,21 +324,27 @@ class VoxCPM2Service:
 
         if isinstance(voice, dict):
             ref_audio, ref_text = self._clone_inputs(input, voice, speed)
+            instruct = None
         else:
             ref_audio = None
+            ref_text = None
             instruct = self._validated(input, voice, speed, instructions, language)
 
-        def stream() -> Iterator[bytes]:
+        def generate() -> list[mx.array]:
             with self._lock:
-                if ref_audio is not None:
-                    chunks = synthesize(self._model, self.config, input, ref_audio=ref_audio, ref_text=ref_text)
-                else:
-                    chunks = synthesize(self._model, self.config, input, instruct=instruct)
-                for audio in chunks:
-                    step = max(1, int(interval * self.sample_rate))
-                    flat = audio.reshape(-1)
-                    for start in range(0, flat.size, step):
-                        yield _pcm16(flat[start : start + step])
+                chunks = list(
+                    synthesize(self._model, self.config, input, instruct=instruct, ref_audio=ref_audio, ref_text=ref_text)
+                )
+            mx.eval(*chunks)  # materialize on the generation thread (see speech_bytes)
+            return chunks
+
+        def stream() -> Iterator[bytes]:
+            chunks = self._on_generation_thread(generate)
+            for audio in chunks:
+                step = max(1, int(interval * self.sample_rate))
+                flat = audio.reshape(-1)
+                for start in range(0, flat.size, step):
+                    yield _pcm16(flat[start : start + step])
 
         return stream()
 

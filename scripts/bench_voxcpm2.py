@@ -46,10 +46,16 @@ def main() -> int:
     parser.add_argument(
         "--eager",
         action="store_true",
-        help="serve eager (VLLM_OMNI_VOXCPM2_EAGER=1) — the A/B baseline vs the default compile_model()",
+        help="library generate path, nothing compiled (VLLM_OMNI_VOXCPM2_EAGER=1) — the A/B baseline",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("compiled", "eager", "library"),
+        default=None,
+        help="generation path: compiled = vendored compiled loop (default), eager/library = library path, nothing compiled",
     )
     args = parser.parse_args()
-    if args.eager:
+    if args.eager or args.mode in ("eager", "library"):
         os.environ["VLLM_OMNI_VOXCPM2_EAGER"] = "1"
 
     from vllm_omni_mlx.tts.voxcpm2 import VoxCPM2Config, VoxCPM2Service, load_voxcpm2_model, local_snapshot
