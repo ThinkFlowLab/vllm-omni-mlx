@@ -239,6 +239,12 @@ class VoiceDesignWeightGatedTest(unittest.TestCase):
         # layout would diverge immediately), audio within the boundary
         # envelope, both above the floor — mirrors test_stream_loop's
         # CustomVoice parity test
+        # exact draw parity is asserted against the eager loop (the recorder
+        # cannot see draws inside the compiled closures; their bit-exactness
+        # is pinned in tests.test_compiled_steps, and compiled-vs-eager drift
+        # is bounded in tests.test_stream_loop.test_compiled_drift_bounded)
+        from vllm_omni_mlx.tts import stream_loop
+
         def ours():
             mx.random.seed(21)
             return mx.concatenate([c.reshape(-1) for c in synthesize_stream(
@@ -246,13 +252,18 @@ class VoiceDesignWeightGatedTest(unittest.TestCase):
                 instruct=DESC, temperature=0.0,
                 streaming_interval=0.5, streaming_initial_interval=0.2, max_tokens=512)])
 
+        was, stream_loop.EAGER_STREAM = stream_loop.EAGER_STREAM, True
+        try:
+            ours_draws, ours_audio = _taped(self.model, ours)
+        finally:
+            stream_loop.EAGER_STREAM = was
+
         def reference():
             mx.random.seed(21)
             return mx.concatenate([r.audio for r in self.model.generate_voice_design(
                 text=EN, instruct=DESC, temperature=0.0, max_tokens=512,
                 stream=True, streaming_interval=0.5) if r.audio is not None and r.audio.size])
 
-        ours_draws, ours_audio = _taped(self.model, ours)
         ref_draws, ref_audio = _taped(self.model, reference)
         self.assertEqual(ours_draws, ref_draws, "design layout divergence: draws differ")
         n = min(ours_audio.shape[0], ref_audio.shape[0])
