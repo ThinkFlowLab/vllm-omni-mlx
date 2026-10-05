@@ -7,7 +7,7 @@ import json
 import threading
 import time
 import uuid
-from typing import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -319,9 +319,13 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             if stream:
                 if fmt not in ("wav", "pcm"):
                     raise ApiError(400, f"response_format must be 'wav' or 'pcm', got '{fmt}'")
-                # a RIFF header needs the total length; streaming is raw PCM
+                # the service knows its own rate (24 kHz Qwen3-TTS, 48 kHz
+                # VoxCPM2); a RIFF header needs the total length, so
+                # streaming is raw PCM either way — an omitted format
+                # defaults to pcm on this path (only an explicit wav 400s)
+                rate = str(getattr(tts_service, "sample_rate", 24000))
                 if payload.get("response_format") == "wav":
-                    raise ApiError(400, "streaming audio is raw pcm (24 kHz 16-bit mono); wav requires stream: false")
+                    raise ApiError(400, f"streaming audio is raw pcm ({rate} Hz 16-bit mono); wav requires stream: false")
                 chunks = tts_service.speech_stream(
                     text,
                     voice,
@@ -336,7 +340,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
                     media_type="audio/pcm",
                     headers={
                         "Cache-Control": "no-cache",
-                        "X-Audio-Sample-Rate": "24000",
+                        "X-Audio-Sample-Rate": rate,
                         "X-Audio-Channels": "1",
                         "X-Audio-Bits": "16",
                         "X-Accel-Buffering": "no",

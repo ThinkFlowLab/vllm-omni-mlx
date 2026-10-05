@@ -47,7 +47,7 @@ Like vLLM-Omni, vllm-omni-mlx targets omni-modality serving across the speech st
 
 - **Omni-modality models** (Qwen3-Omni — text, image, and audio in; text and speech out)
 - **ASR models** (e.g. Whisper, Parakeet, Qwen3-ASR, Voxtral, SenseVoice)
-- **TTS models** (Qwen3-TTS CustomVoice, VoiceDesign)
+- **TTS models** (Qwen3-TTS CustomVoice, VoiceDesign; VoxCPM2)
 
 | Modality | Models | Example HF models | Engine | Status |
 | --- | --- | --- | --- | --- |
@@ -55,6 +55,7 @@ Like vLLM-Omni, vllm-omni-mlx targets omni-modality serving across the speech st
 | Speech in → text out (ASR) | Whisper, Parakeet, Qwen3-ASR, Qwen2-Audio, Voxtral, SenseVoice, Moonshine, … <sup>2</sup> | `mlx-community/whisper-large-v3-turbo` | `mlx-audio` (`[tts]` extra) | 🚧 planned — engine support via mlx-audio stt, transcription endpoint not built yet |
 | Text → speech out | Qwen3-TTS-12Hz-1.7B-CustomVoice | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end (4-bit) <sup>3</sup> |
 | Text → speech out (described voice) | Qwen3-TTS-12Hz-1.7B-VoiceDesign | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end buffered + streaming (4-bit, weight-gated tests) <sup>3</sup> |
+| Text → speech out (zero-shot / cloned / described voice, 30+ languages, 48 kHz) | VoxCPM2 | `mlx-community/VoxCPM2-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end buffered (4-bit, weight-gated tests); stream delivers the finished buffer — incremental streaming + compiled decode are follow-up work <sup>4</sup> |
 
 <sup>1</sup> mlx-vlm 0.7 ships the full Qwen3-Omni thinker/talker implementation; this server currently
 consumes its text output only — speech-out chat and video input are future work. The 30B-A3B MoE
@@ -64,6 +65,9 @@ still load through their engines but are not supported categories.
 them on an OpenAI-style `/v1/audio/transcriptions` endpoint is planned. Families listed are present
 in the installed engine, not verified through this server.
 <sup>3</sup> Verified on the 4-bit quantization; the bf16 variant loads but is untested. `speed` must be 1.0 for now.
+<sup>4</sup> VoxCPM2 has no speaker presets: `voice: "default"` speaks zero-shot, `instructions` designs a voice,
+and cloning rides the same `voice` object as Qwen3-TTS Base (`ref_audio` required, `ref_text` accepted but
+unused — VoxCPM2 conditions on the clip alone). Output is 48 kHz mono.
 
 ## Getting Started
 
@@ -128,8 +132,8 @@ re-prefill, so correctness never depends on the cache).
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI (streaming via SSE, `stop`, multimodal `image_url` / `input_audio` content parts) |
 | `POST /v1/messages` | Anthropic (streaming via SSE, `stop_sequences`, base64/URL image blocks) |
-| `POST /v1/audio/speech` | OpenAI audio (`wav` 24 kHz mono / raw `pcm`; needs a TTS model via `--omni` or `--tts-model`, `[tts]` extra) |
-| `GET /v1/audio/voices` | preset CustomVoice speakers for the loaded TTS model (empty on Base/VoiceDesign checkpoints) |
+| `POST /v1/audio/speech` | OpenAI audio (`wav` mono / raw `pcm`; 24 kHz on Qwen3-TTS, 48 kHz on VoxCPM2; needs a TTS model via `--omni` or `--tts-model`, `[tts]` extra) |
+| `GET /v1/audio/voices` | preset speakers for the loaded TTS model (`["default"]` on VoxCPM2, empty on Base/VoiceDesign checkpoints) |
 | `GET /v1/models` | OpenAI model list |
 | `GET /health` | liveness |
 
