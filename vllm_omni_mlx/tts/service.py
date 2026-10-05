@@ -24,8 +24,16 @@ from .generate import (
     wav_bytes,
 )
 from .prompt_embeds import PromptEmbeds
-from .stream_loop import synthesize_clone_stream, synthesize_stream
-from .variants import BASE, SMALL_SIZE, VOICE_DESIGN, model_size, model_variant, require_served
+from .stream_loop import synthesize_clone_stream, synthesize_stream, warm_voice_prefix
+from .variants import (
+    BASE,
+    CUSTOM_VOICE,
+    SMALL_SIZE,
+    VOICE_DESIGN,
+    model_size,
+    model_variant,
+    require_served,
+)
 
 # stream-path chunk default (#40's measured knee; the buffered path keeps
 # TTSConfig.streaming_interval — chunking is irrelevant when joining)
@@ -46,6 +54,16 @@ class TTSService:
         self._model_size = model_size(model)
         self._embeds = PromptEmbeds(model)
         self._lock = threading.Lock()
+        if self._variant == CUSTOM_VOICE:
+            # #66: prefill the default voice's static prefix at boot so the
+            # first request is a prefix-cache hit; best-effort — a failure
+            # just leaves that voice on the miss path
+            try:
+                warm_voice_prefix(
+                    model, self.config.speaker, self.config.language, self.config.instruct
+                )
+            except Exception:
+                pass
 
     @property
     def name(self) -> str:

@@ -213,11 +213,19 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
         # frame in 45 on this seed, cascading only within that frame's
         # predictor groups), after which tokens/audio are legitimately
         # different. Bounds: no divergence in the first 5 frames, HNR above
-        # the floor, duration within 2x of the eager run.
+        # the floor, duration within 2x of the eager run. The #66 prefix
+        # cache is disabled for the compiled run — its splice is a valid
+        # but different decode regime (see test_prefix_cache), out of scope
+        # for this compile-only drift bound.
+        import os
+
         from vllm_omni_mlx.tts import stream_loop
 
         def run(eager: bool):
             was, stream_loop.EAGER_STREAM = stream_loop.EAGER_STREAM, eager
+            env_saved = os.environ.get("VLLM_OMNI_TTS_PREFIX_CACHE")
+            if not eager:
+                os.environ["VLLM_OMNI_TTS_PREFIX_CACHE"] = "0"
             try:
                 mx.random.seed(21)
                 draws: list[int] = []
@@ -237,6 +245,10 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
                     self.model._sample_token = orig
             finally:
                 stream_loop.EAGER_STREAM = was
+                if env_saved is None:
+                    os.environ.pop("VLLM_OMNI_TTS_PREFIX_CACHE", None)
+                else:
+                    os.environ["VLLM_OMNI_TTS_PREFIX_CACHE"] = env_saved
             return draws, audio
 
         eager_draws, _ = run(True)
