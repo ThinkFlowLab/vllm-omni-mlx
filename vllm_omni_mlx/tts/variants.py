@@ -71,7 +71,6 @@ _TRACKING = {
         "VoiceDesign checkpoints have no preset voices — the voice comes from "
         "`instructions` (a text description); preset `voice` is not accepted"
     ),
-    ),
     (VOICE_DESIGN, "clone"): (
         "voice cloning needs a Base checkpoint; VoiceDesign takes a text "
         "description in `instructions` (#46)"
