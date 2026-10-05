@@ -47,6 +47,25 @@ Operational and development scripts.
   python scripts/bench_stream_rtf.py --label run --turns 4
   ```
 
+- `profile_prefix_cost.py` (#66): per-request TTFA cost split — prompt
+  build (tokenizer / text projection / voice-static pieces / assembly) vs
+  the multi-row prefill forward vs the single-row splice decode, plus the
+  splice-vs-fresh logits delta (the kernel-batching numerics that motivate
+  #66's draw-level, not bitwise, parity claim). Weight-gated:
+
+  ```sh
+  python scripts/profile_prefix_cost.py --iters 5
+  ```
+
+- `bench_prefix_cache.py` (#66): interleaved cool-machine A/B for the
+  voice-prefix cache — `VLLM_OMNI_TTS_PREFIX_CACHE` off vs warm-cache hits,
+  alternating order per pair with cool-down sleeps, reporting first-chunk
+  p50/min and RTF per side plus one cold-cache miss turn. Weight-gated:
+
+  ```sh
+  python scripts/bench_prefix_cache.py --pairs 4 --cooldown 8
+  ```
+
 - `profile_compiled_loop.py` (#77): phase split of the COMPILED stream
   loop — eval-bracketed wrappers around the compiled closures (talker
   decode / predictor frame / sampler / input prep) plus loop residue

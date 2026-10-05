@@ -12,6 +12,7 @@ Easy, fast, and lightweight omni-modality model serving for Apple Silicon
 
 *Latest News* 🔥
 - [2026/10] Streaming speech: `"stream": true` chunked PCM on `/v1/audio/speech`, with a first-chunk fast path — time to first audio 132–290 ms and sustained RTF ~0.9 on a quiet M4.
+- [2026/10] TTS voice-prefix cache: per-voice prompt state (prompt pieces + static-prefix KV) is reused across requests — first audio another ~20–40 ms sooner on a warm voice, sustained RTF unchanged, reproducible streams.
 - [2026/10] M1 speech milestone: Qwen3-TTS CustomVoice synthesis on MLX — `/v1/audio/speech` + `/v1/audio/voices`, one-shot `tts` CLI, 64 weight-gated tests.
 - [2026/10] v0.1 core: OpenAI + Anthropic compatible APIs on Starlette, cross-turn prompt cache (8.3× faster TTFT on continued conversations), `--draft-model` and `--kv-bits` performance flags.
 
@@ -32,6 +33,7 @@ in a single process built for batch-1 low latency.
 vllm-omni-mlx is fast with:
 
 - Streaming TTS first-chunk fast path: first audio in 132–290 ms instead of after full generation
+- TTS voice-prefix cache: the per-voice static prompt (instruct/role/codec prefix) prefills once per voice and is spliced into every request — no re-prefill, bitwise-reproducible streams per voice
 - Cross-turn prompt cache: continuing a conversation prefills only the new suffix (measured 8.3× faster time-to-first-token, text engine)
 - `--draft-model` speculative decoding and `--kv-bits` quantized KV cache for long contexts (text engine)
 
@@ -155,10 +157,12 @@ first-chunk fast path as CustomVoice (compiled decode, #65). Streaming: pass `"s
 PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
 WAV — first audio typically lands in under 0.5 s instead of after the full
 generation; `streaming_interval` (default 0.5 s) trades first-audio latency
-for chunk cadence, and `streaming_initial_interval` (default 0.2 s) emits the
-first chunk as soon as that much audio exists (quantized to a power-of-two
-frame bucket, so compiled decode shapes stay bounded) — measured time to
-first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
+for chunk cadence, and `streaming_initial_interval` (default 0.08 s, one
+codec frame) emits the first chunk as soon as that much audio exists
+(quantized to a power-of-two frame bucket, so compiled decode shapes stay
+bounded) — measured time to first audio: ~130 ms at the default on a quiet
+M4, −35 ms vs the older 0.2 s default at unchanged RTF (#77); raise it to
+0.2 for a chunkier first beat. One-shot synthesis without a server:
 `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
 **Voice cloning** (Base checkpoints, e.g.

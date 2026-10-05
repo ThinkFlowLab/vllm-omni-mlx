@@ -18,6 +18,13 @@ ECAPA / ref-audio — that is M2). VoiceDesign passes ``speaker=None`` — the
 spk row is simply absent and the voice description rides ``instruct``
 (#52; mlx-audio's own ``generate_voice_design`` does exactly this). All
 special ids come from config.
+
+#66 splits the build by data dependence: the voice-static pieces (codec
+prefix, tts specials, instruct projection) come from the per-voice
+:mod:`prefix_cache` — computed once per ``(speaker, language, instruct)``
+key — while the tokenizer + text embedding pass runs fresh per request.
+The ops and their order are mlx-audio's own, so the assembled prompt is
+bit-identical to a direct ``_prepare_generation_inputs`` call.
 """
 
 from __future__ import annotations
@@ -26,6 +33,8 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 import mlx.core as mx
+
+from .prefix_cache import prompt_pieces
 
 
 @dataclass(frozen=True)
@@ -38,6 +47,12 @@ class PromptLayout:
     @property
     def hidden_size(self) -> int:
         return self.input_embeds.shape[-1]
+
+    @property
+    def prefix_rows(self) -> int:
+        """Rows of ``input_embeds`` that are voice-static — everything but
+        the final first-text row (#66's Level-2 splice boundary)."""
+        return self.input_embeds.shape[1] - 1
 
     @property
     def speaker_position(self) -> int:
@@ -78,17 +93,40 @@ class PromptEmbeds:
             raise ValueError(f"unknown speaker '{speaker}'; available: {known}") from None
 
     def build(self, text: str, speaker: Optional[str], language: str = "auto", instruct: Optional[str] = None) -> PromptLayout:
-        auto = language.lower() == "auto" or not self._config.codec_language_id
-        # nothink path (Auto): 3 think rows + [pad, bos]; explicit language
-        # adds one row (think id + language id); a speaker adds its embed row
-        # (absent for VoiceDesign — qwen3_tts.py:441 skips the splice)
-        codec_prefix_len = (3 if auto else 4) + (1 if speaker else 0) + 2
-        input_embeds, trailing, tts_pad = self._model._prepare_generation_inputs(
-            text=text, language=language, speaker=speaker, instruct=instruct
+        pieces = prompt_pieces(self._model, speaker, language, instruct)
+
+        # per-request half (the text rows): tokenize with the chat template,
+        # embed, project — the only part of the prompt that depends on `text`
+        chat_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        input_ids = mx.array(self._model.tokenizer.encode(chat_text))[None, :]
+        talker = self._model.talker
+        text_embed = talker.text_projection(talker.get_text_embeddings()(input_ids))
+
+        codec_embed = pieces.codec_embed
+        # tts_pad * (codec_len - 2) + tts_bos, channel-summed with codec[:-1]
+        pad_count = codec_embed.shape[1] - 2
+        pad_embeds = mx.broadcast_to(pieces.tts_pad_embed, (1, pad_count, pieces.tts_pad_embed.shape[-1]))
+        combined_embed = mx.concatenate([pad_embeds, pieces.tts_bos_embed], axis=1)
+        combined_embed = combined_embed + codec_embed[:, :-1, :]
+
+        # role(3) [+ instruct prepended] + combined + first text token
+        head = (
+            [pieces.instruct_embed, text_embed[:, :3, :]]
+            if pieces.instruct_embed is not None
+            else [text_embed[:, :3, :]]
+        )
+        input_embeds = mx.concatenate(head + [combined_embed], axis=1)
+        first_text_embed = text_embed[:, 3:4, :] + codec_embed[:, -1:, :]
+        input_embeds = mx.concatenate([input_embeds, first_text_embed], axis=1)
+
+        # trailing text (tokens 4 to -5, plus EOS)
+        trailing_text_hidden = mx.concatenate(
+            [text_embed[:, 4:-5, :], pieces.tts_eos_embed],
+            axis=1,
         )
         return PromptLayout(
             input_embeds=input_embeds,
-            trailing_text_hidden=trailing,
-            decode_text_embed=tts_pad,
-            codec_prefix_len=codec_prefix_len,
+            trailing_text_hidden=trailing_text_hidden,
+            decode_text_embed=pieces.tts_pad_embed,
+            codec_prefix_len=codec_embed.shape[1],
         )

@@ -29,7 +29,22 @@ Talker, CodePredictor, Code2Wav), with two additions:
   identical inputs; end-to-end greedy streams may still diverge on rare
   fp16 near-ties under fusion (see tts.compiled_steps).
   ``VLLM_OMNI_TTS_EAGER_STREAM=1`` keeps the uncompiled
-  mlx-audio-mirror loop for A/B and debugging.
+  mlx-audio-mirror loop for A/B and debugging;
+- voice-prefix KV splice (#66): the prompt's voice-static rows (instruct?
+  + role + codec prefix, everything but the first-text row) prefill to the
+  same K/V for every request with one voice, so they are forwarded once per
+  ``(speaker, language, instruct)`` key — one batched forward whose K/V is
+  cached — and every request feeds only its first-text row through the
+  compiled decode at the prefix offset; a miss computes exactly what a hit
+  replays (same arrays, same closures → bitwise-identical streams, so
+  repeated requests are reproducible) while the ~90 ms multi-row eager
+  prefill becomes a ~22 ms single-row decode. The first-text row's
+  numerics move between mlx-audio's own kernel batchings (multi-row
+  prefill vs single-row decode), so cached streams are NOT draw-identical
+  to the uncached path — fp16 chaos amplifies the rounding difference
+  within a few frames; the eager loop (never cached) and
+  ``VLLM_OMNI_TTS_PREFIX_CACHE=0`` keep the uncached reference for parity
+  and A/B.
 """
 
 from __future__ import annotations
@@ -47,6 +62,7 @@ from .compiled_steps import (
     make_talker_sampler,
 )
 from .config import TTSConfig
+from .prefix_cache import lookup_prefix_kv, prefix_cache_enabled, store_prefix_kv
 from .prompt_embeds import PromptEmbeds
 from .talker import Talker
 from .variants import VOICE_DESIGN, ensure_served, model_variant, require_served
@@ -182,6 +198,26 @@ def generate_frames(
     decoder = model.speech_tokenizer.decoder
     decoder.reset_streaming_state()
 
+    # #66 voice-prefix splice — compiled mode only (the eager loop stays the
+    # exact mlx-audio-mirror reference). Every entry — miss-built, hit, or
+    # boot-warmed — originates from the same canonical build
+    # (:func:`ensure_voice_prefix`), so all requests with a voice splice
+    # bitwise-identical static K/V and feed only their first-text row
+    # through the compiled decode at the prefix offset: the same (voice,
+    # text, seed) is reproducible across requests. The numerics of the
+    # first-text row move from mlx-audio's multi-row prefill kernels to the
+    # single-row decode kernels — a valid decode of the same prompt, but
+    # NOT draw-identical to the uncached path (fp16 chaos amplifies the
+    # kernel-rounding difference within a few frames); the eager loop and
+    # ``VLLM_OMNI_TTS_PREFIX_CACHE=0`` keep the uncached reference for A/B.
+    use_prefix = compiled and prefix_cache_enabled()
+    prefix = ensure_voice_prefix(model, speaker, language, instruct) if use_prefix else None
+    if prefix is not None:
+        keys = list(prefix.keys)
+        values = list(prefix.values)
+        position = prefix.length
+        input_embeds = layout.input_embeds[:, -1:, :]
+
     def decode_pending(padded_to: int | None = None) -> mx.array:
         """streaming_step over generated-but-undecoded frames, optionally
         padded to a compiled bucket shape; padded tail audio is trimmed
@@ -205,8 +241,10 @@ def generate_frames(
         for _ in range(max_tokens):
             if keys is None:
                 # first frame doubles as the prompt prefill through
-                # mlx-audio's eager path; transplant its cache into the
-                # compiled decode's array state on the way out
+                # mlx-audio's eager path — the uncached paths' prefill
+                # (eager reference loop; compiled with the prefix cache
+                # disabled); the compiled splice above bypasses this by
+                # construction
                 logits, hidden = model.talker(input_embeds, cache=cache)
                 if compiled:
                     position = cache[0].offset
@@ -329,6 +367,48 @@ def synthesize_stream(model: Any, config: TTSConfig, text: str, **overrides) -> 
         initial_frames=frames_for_interval(cfg.streaming_initial_interval),
         chunk_frames=frames_for_interval(cfg.streaming_interval),
     )
+
+
+#: canonical text for prefix entries (#66): the role rows pass through
+#: ``text_projection``, whose GEMM rounding depends on the prompt's
+#: tokenized length, so "the static rows" of two texts with the same voice
+#: differ in low bits. Building every entry from ONE fixed text pins those
+#: bits: miss-built, hit, and boot-warmed entries are bitwise identical.
+_PREFIX_TEXT = "warm"
+
+
+def ensure_voice_prefix(model: Any, speaker: "str | None", language: str = "auto", instruct: str | None = None):
+    """The voice's prefix entry — looked up, or built now from the canonical
+    text (one batched forward over the static rows, stored per voice key).
+    Returns None when the cache is disabled."""
+    if not prefix_cache_enabled():
+        return None
+    entry = lookup_prefix_kv(model, speaker, language, instruct)
+    if entry is not None:
+        return entry
+    layout = PromptEmbeds(model).build(_PREFIX_TEXT, speaker, language, instruct)
+    n = layout.prefix_rows
+    if n <= 0:
+        return None
+    cache = model.talker.make_cache()
+    model.talker(layout.input_embeds[:, :-1, :], cache=cache)
+    entry = store_prefix_kv(
+        model, speaker, language, instruct,
+        keys=[c.keys[..., :n, :] for c in cache],
+        values=[c.values[..., :n, :] for c in cache],
+        length=n,
+    )
+    mx.clear_cache()
+    return entry
+
+
+def warm_voice_prefix(model: Any, speaker: "str | None", language: str = "auto", instruct: str | None = None) -> bool:
+    """Populate the #66 prefix store for one voice up front — the static-row
+    forward only, no generation — so a server's first request on its default
+    voice is a cache hit. Thin wrapper over :func:`ensure_voice_prefix`;
+    failures are the caller's to tolerate (a request would simply build the
+    entry on demand)."""
+    return ensure_voice_prefix(model, speaker, language, instruct) is not None
 
 
 def generate_icl_frames(

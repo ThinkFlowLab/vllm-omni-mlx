@@ -32,6 +32,17 @@ class TTSConfigTest(unittest.TestCase):
         self.assertEqual(config.repetition_penalty, 1.05)
         self.assertEqual(config.streaming_interval, 2.0)
 
+    def test_streaming_initial_default_is_one_frame(self):
+        # #77: 0.08 s of audio at the 12.5 fps codec = one frame — the
+        # fastest first chunk that still exercises a prewarmed bucket shape
+        from vllm_omni_mlx.tts.stream_loop import frames_for_interval, initial_frames_bucket
+
+        config = TTSConfig()
+        self.assertEqual(config.streaming_initial_interval, 0.08)
+        frames = frames_for_interval(config.streaming_initial_interval)
+        self.assertEqual(frames, 1)
+        self.assertEqual(initial_frames_bucket(frames, frames_for_interval(0.5)), 1)
+
     def test_with_overrides_ignores_none_and_unknown_and_model_ref(self):
         config = TTSConfig()
         overridden = config.with_overrides(speaker="Ryan", temperature=None, bogus=1, model_ref="other")

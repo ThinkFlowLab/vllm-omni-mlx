@@ -124,6 +124,17 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
         self.assertLessEqual(chunks[-1].shape[0], 6 * SAMPLES_PER_FRAME)
         self.assertGreater(chunks[-1].shape[0], 0)
 
+    def test_default_config_first_chunk_is_one_frame(self):
+        # the 0.08 s streaming_initial_interval default (#77, −35 ms TTFA at
+        # unchanged RTF) buckets to a single codec frame
+        chunks = list(
+            synthesize_stream(
+                self.model, self.config, EN, speaker="vivian", temperature=0.0, max_tokens=24
+            )
+        )
+        self.assertGreaterEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].shape[0], SAMPLES_PER_FRAME)
+
     def test_padded_remainder_is_trimmed_exact(self):
         # pad-and-trim safety: the decoder is causal, so padding the final
         # chunk to a compiled bucket shape must not disturb the true frames'
@@ -213,11 +224,19 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
         # frame in 45 on this seed, cascading only within that frame's
         # predictor groups), after which tokens/audio are legitimately
         # different. Bounds: no divergence in the first 5 frames, HNR above
-        # the floor, duration within 2x of the eager run.
+        # the floor, duration within 2x of the eager run. The #66 prefix
+        # cache is disabled for the compiled run — its splice is a valid
+        # but different decode regime (see test_prefix_cache), out of scope
+        # for this compile-only drift bound.
+        import os
+
         from vllm_omni_mlx.tts import stream_loop
 
         def run(eager: bool):
             was, stream_loop.EAGER_STREAM = stream_loop.EAGER_STREAM, eager
+            env_saved = os.environ.get("VLLM_OMNI_TTS_PREFIX_CACHE")
+            if not eager:
+                os.environ["VLLM_OMNI_TTS_PREFIX_CACHE"] = "0"
             try:
                 mx.random.seed(21)
                 draws: list[int] = []
@@ -237,6 +256,10 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
                     self.model._sample_token = orig
             finally:
                 stream_loop.EAGER_STREAM = was
+                if env_saved is None:
+                    os.environ.pop("VLLM_OMNI_TTS_PREFIX_CACHE", None)
+                else:
+                    os.environ["VLLM_OMNI_TTS_PREFIX_CACHE"] = env_saved
             return draws, audio
 
         eager_draws, _ = run(True)
