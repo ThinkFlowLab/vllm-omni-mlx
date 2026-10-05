@@ -153,11 +153,8 @@ class TTSService:
                         yield _pcm16(chunk)
 
             return clone_stream()
-        if self._variant == VOICE_DESIGN:
-            raise ValueError(
-                "streaming VoiceDesign synthesis is not supported yet — #52; "
-                "the buffered path (stream absent/false) serves it"
-            )
+        # VoiceDesign streams through the same fast path (#52/#59): the
+        # validated overrides carry instruct and reject preset voices
         overrides = self._validated_overrides(input, voice, speed, instructions, language)
         interval = DEFAULT_STREAM_INTERVAL if streaming_interval is None else streaming_interval
         if not 0.0 < interval <= 10.0:

@@ -22,7 +22,7 @@ preset (streaming) custom_voice    :func:`stream_loop.synthesize_stream`
 clone (buffered)   base            :func:`generate.synthesize_clone`
 clone (streaming)  base            :func:`stream_loop.synthesize_clone_stream`
 design (buffered)  voice_design    :func:`generate.synthesize_design`
-design (streaming) — none yet      #52
+design (streaming) voice_design    :func:`stream_loop.synthesize_stream` (#52)
 =================  ==============  =====================================
 """
 
@@ -48,7 +48,7 @@ SERVED_BY_PATH = {
     "preset": (CUSTOM_VOICE,),
     "clone": (BASE,),  # buffered
     "clone_stream": (BASE,),  # streaming (#50)
-    "design": (VOICE_DESIGN,),  # buffered (#51); streaming design is #52
+    "design": (VOICE_DESIGN,),  # buffered (#51) + streaming (#52)
 }
 
 #: kept from #47 for the preset paths — ``SERVED_BY_PATH["preset"]``
@@ -69,8 +69,7 @@ _TRACKING = {
     ),
     (VOICE_DESIGN, "preset"): (
         "VoiceDesign checkpoints have no preset voices — the voice comes from "
-        "`instructions` (a text description); preset `voice` is not accepted "
-        "(buffered #51; streaming #52)"
+        "`instructions` (a text description); preset `voice` is not accepted"
     ),
     (VOICE_DESIGN, "clone"): (
         "voice cloning needs a Base checkpoint; VoiceDesign takes a text "

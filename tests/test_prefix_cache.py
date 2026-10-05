@@ -38,7 +38,7 @@ from tests.audio_metrics import CLEAN_VOICE_HNR_DB, int16_pcm_hnr_db
 from vllm_omni_mlx.tts import prefix_cache
 from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot
 from vllm_omni_mlx.tts.prompt_embeds import PromptEmbeds
-from vllm_omni_mlx.tts.stream_loop import generate_custom_voice_frames, prewarm_streaming
+from vllm_omni_mlx.tts.stream_loop import generate_frames, prewarm_streaming
 
 EN = "The quick brown fox jumps over the lazy dog."
 ZH = "今天天气真不错，我们一起去公园散步吧。"
@@ -51,7 +51,7 @@ def _pcm16(audio: mx.array) -> bytes:
 def _greedy(model, text, speaker, language="auto", instruct=None, max_tokens=200):
     mx.random.seed(21)
     return mx.concatenate(
-        [c.reshape(-1) for c in generate_custom_voice_frames(
+        [c.reshape(-1) for c in generate_frames(
             model, text=text, speaker=speaker, language=language, instruct=instruct,
             temperature=0.0, max_tokens=max_tokens)]
     )
@@ -243,7 +243,7 @@ class PrefixCacheWeightsTest(ReleaseAfterClass, unittest.TestCase):
     def test_cached_stream_hnr_above_floor(self):
         mx.random.seed(3)
         audio = mx.concatenate(
-            [c for c in generate_custom_voice_frames(
+            [c for c in generate_frames(
                 self.model, text=EN, speaker="vivian", temperature=0.9, max_tokens=300)]
         )
         hnr = int16_pcm_hnr_db(_pcm16(audio))

@@ -29,7 +29,7 @@ from vllm_omni_mlx.tts.stream_loop import (
     SAMPLES_PER_FRAME,
     _pad_target,
     frames_for_interval,
-    generate_custom_voice_frames,
+    generate_frames,
     initial_frames_bucket,
     prewarm_streaming,
     synthesize_stream,
@@ -112,7 +112,7 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
 
     def test_first_chunk_is_initial_frames_then_steady(self):
         chunks = list(
-            generate_custom_voice_frames(
+            generate_frames(
                 self.model, text=EN, speaker="vivian", temperature=0.0, max_tokens=512,
                 initial_frames=2, chunk_frames=6,
             )
@@ -152,13 +152,13 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
         # audio stays inside the boundary-sensitivity envelope
         def fast():
             mx.random.seed(21)
-            return mx.concatenate([c.reshape(-1) for c in generate_custom_voice_frames(
+            return mx.concatenate([c.reshape(-1) for c in generate_frames(
                 self.model, text=EN, speaker="vivian", temperature=0.0, max_tokens=512,
                 initial_frames=2, chunk_frames=6)])
 
         def steady():
             mx.random.seed(21)
-            return mx.concatenate([c.reshape(-1) for c in generate_custom_voice_frames(
+            return mx.concatenate([c.reshape(-1) for c in generate_frames(
                 self.model, text=EN, speaker="vivian", temperature=0.0, max_tokens=512,
                 initial_frames=6, chunk_frames=6)])
 
@@ -178,7 +178,7 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
 
         def ours():
             mx.random.seed(21)
-            return mx.concatenate([c.reshape(-1) for c in generate_custom_voice_frames(
+            return mx.concatenate([c.reshape(-1) for c in generate_frames(
                 self.model, text=EN, speaker="vivian", temperature=0.0, max_tokens=512,
                 initial_frames=2, chunk_frames=6)])
 
@@ -238,7 +238,7 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
 
                 self.model._sample_token = sampler
                 try:
-                    audio = mx.concatenate([c.reshape(-1) for c in generate_custom_voice_frames(
+                    audio = mx.concatenate([c.reshape(-1) for c in generate_frames(
                         self.model, text=EN, speaker="vivian", temperature=0.0, max_tokens=512,
                         initial_frames=2, chunk_frames=6)])
                 finally:

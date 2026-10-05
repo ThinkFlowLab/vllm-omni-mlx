@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Task 1 of #65: per-frame phase split of the vendored stream loop.
 
-Runs an eval-bracket-instrumented copy of ``generate_custom_voice_frames``
+Runs an eval-bracket-instrumented copy of ``generate_frames``
 (same call order, one extra ``mx.eval`` per phase — the brackets add sync
 overhead to the whole, so absolute RTF here reads slightly high; the phase
 *shares* are the signal) and reports:
@@ -42,7 +42,7 @@ from vllm_omni_mlx.tts.config import (
 from vllm_omni_mlx.tts.prompt_embeds import PromptEmbeds
 from vllm_omni_mlx.tts.stream_loop import (
     SAMPLES_PER_FRAME,
-    generate_custom_voice_frames,
+    generate_frames,
     prewarm_streaming,
 )
 from vllm_omni_mlx.tts.talker import Talker
@@ -82,7 +82,7 @@ class Timer:
 def profiled_frames(model, timer: Timer, *, text: str, speaker: str, temperature: float,
                     top_k: int, top_p: float, repetition_penalty: float, max_tokens: int,
                     initial_frames: int = 2, chunk_frames: int = 6):
-    """``generate_custom_voice_frames`` with per-phase eval brackets — the
+    """``generate_frames`` with per-phase eval brackets — the
     call order is step-for-step the production loop's; only the sync points
     are added (one per phase instead of one per frame)."""
     talker = Talker(model.talker)
@@ -239,7 +239,7 @@ def main() -> int:
     # warmup: discarded short generation (shader + allocator + JIT), then a
     # sustained-load clock ramp, then the measured run
     print(f"warmup generation ({args.warmup_tokens} frames) …", flush=True)
-    for _ in generate_custom_voice_frames(
+    for _ in generate_frames(
         model, text=LONG_TEXT, speaker=args.speaker, temperature=args.temperature,
         max_tokens=args.warmup_tokens,
     ):

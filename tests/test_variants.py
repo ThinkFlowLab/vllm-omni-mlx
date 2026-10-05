@@ -90,8 +90,8 @@ class GenerationEntryGuardTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no preset voices"):
             list(synthesize(stub_model("base"), TTSConfig(), "hello"))
 
-    def test_synthesize_stream_rejects_voice_design(self):
-        with self.assertRaisesRegex(ValueError, "#52"):
+    def test_synthesize_stream_design_needs_instruct(self):
+        with self.assertRaisesRegex(ValueError, "voice description"):
             list(synthesize_stream(stub_model("voice_design"), TTSConfig(), "hello"))
 
     def test_synthesize_clone_rejects_custom_voice(self):
@@ -114,10 +114,15 @@ class ServicePerTypeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ref_audio"):
             service.speech_bytes("hello")
 
-    def test_voice_design_rejects_speech_even_with_instructions(self):
+    def test_voice_design_streaming_validates_then_generates(self):
+        # #52: streaming design is served — validation passes and generation
+        # starts; the stub has no engine, so the only failure left must not
+        # be a service-level rejection
         service = TTSService(stub_model("voice_design"))
-        with self.assertRaisesRegex(ValueError, "#52"):
-            service.speech_stream("hello", instructions="a cheerful young voice")
+        stream = service.speech_stream("hello", instructions="a cheerful young voice")
+        with self.assertRaises((AttributeError, TypeError)) as ctx:
+            next(stream)
+        self.assertNotIn("#52", str(ctx.exception))
 
     def test_custom_voice_validation_unchanged(self):
         service = TTSService(stub_model("custom_voice", PRESETS))

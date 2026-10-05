@@ -41,7 +41,7 @@ from vllm_omni_mlx.tts.config import (
     load_tts_model,
     local_snapshot,
 )
-from vllm_omni_mlx.tts.stream_loop import generate_custom_voice_frames, prewarm_streaming
+from vllm_omni_mlx.tts.stream_loop import generate_frames, prewarm_streaming
 from vllm_omni_mlx.tts.compiled_steps import make_talker_decode
 
 EN = "The quick brown fox jumps over the lazy dog."
@@ -153,7 +153,7 @@ def main() -> int:
     decode_step = make_talker_decode(model.talker)
     prewarm_streaming(model, 0.5, 0.2)
     # warmup so the first measured iter sees steady kernels/allocator
-    for _ in generate_custom_voice_frames(model, text=LONG_TEXT, speaker="vivian", max_tokens=24):
+    for _ in generate_frames(model, text=LONG_TEXT, speaker="vivian", max_tokens=24):
         pass
     sustained_load(1.0)
 
@@ -235,7 +235,7 @@ def main() -> int:
     # steady frame wall for scale
     t0 = time.perf_counter()
     frames = 0
-    for chunk in generate_custom_voice_frames(model, text=LONG_TEXT, speaker="vivian", max_tokens=48):
+    for chunk in generate_frames(model, text=LONG_TEXT, speaker="vivian", max_tokens=48):
         frames += chunk.shape[0] // 1920
     frame_ms = (time.perf_counter() - t0) * 1000.0 / max(1, frames)
     print(f"\nsteady frame wall (compiled loop): {frame_ms:.2f} ms/frame")

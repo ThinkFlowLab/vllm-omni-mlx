@@ -1,4 +1,5 @@
-"""CustomVoice prompt-embeds seam (M1.5, #14) — adapting mlx-audio (MIT).
+"""Dual-track prompt-embeds seam (M1.5 #14, speakerless in #52) — adapting
+mlx-audio (MIT).
 
 The dual-track prompt layout (the piece where a wrong layout silently
 produces garbage audio) is implemented by mlx-audio's
@@ -13,7 +14,10 @@ produces garbage audio) is implemented by mlx-audio's
     trailing     text_embed[4:-5] + tts_eos     the returned tts_pad embed)
 
 CustomVoice speakers resolve through the checkpoint's ``spk_id`` map (no
-ECAPA / ref-audio — that is M2). All special ids come from config.
+ECAPA / ref-audio — that is M2). VoiceDesign passes ``speaker=None`` — the
+spk row is simply absent and the voice description rides ``instruct``
+(#52; mlx-audio's own ``generate_voice_design`` does exactly this). All
+special ids come from config.
 
 #66 splits the build by data dependence: the voice-static pieces (codec
 prefix, tts specials, instruct projection) come from the per-voice
@@ -65,7 +69,9 @@ class PromptLayout:
 
 
 class PromptEmbeds:
-    """Build the CustomVoice dual-track prompt for a loaded mlx-audio model."""
+    """Build the dual-track prompt for a loaded mlx-audio model — CustomVoice
+    (``speaker`` set) or VoiceDesign (``speaker=None``, description in
+    ``instruct``)."""
 
     def __init__(self, model: Any):
         self._model = model
@@ -86,7 +92,7 @@ class PromptEmbeds:
             known = ", ".join(sorted(self.speakers))
             raise ValueError(f"unknown speaker '{speaker}'; available: {known}") from None
 
-    def build(self, text: str, speaker: str, language: str = "auto", instruct: Optional[str] = None) -> PromptLayout:
+    def build(self, text: str, speaker: Optional[str], language: str = "auto", instruct: Optional[str] = None) -> PromptLayout:
         pieces = prompt_pieces(self._model, speaker, language, instruct)
 
         # per-request half (the text rows): tokenize with the chat template,
