@@ -1,5 +1,12 @@
 # vllm-omni-mlx
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/vllm-omni-mlx-logo-dark.svg">
+    <img alt="vLLM-Omni-MLX" src="assets/vllm-omni-mlx-logo-light.svg" width="620">
+  </picture>
+</p>
+
 <h3 align="center">
 Easy, fast, and lightweight omni-modality model serving for Apple Silicon
 </h3>
