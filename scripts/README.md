@@ -46,3 +46,13 @@ Operational and development scripts.
   ```sh
   python scripts/bench_stream_rtf.py --label run --turns 4
   ```
+
+- `profile_compiled_loop.py` (#77): phase split of the COMPILED stream
+  loop — eval-bracketed wrappers around the compiled closures (talker
+  decode / predictor frame / sampler / input prep) plus loop residue
+  (vocoder), and the serving weight dtypes. The #65 profiler measures
+  the eager loop; this one measures what serving runs. Weight-gated:
+
+  ```sh
+  python scripts/profile_compiled_loop.py --max-tokens 400
+  ```
