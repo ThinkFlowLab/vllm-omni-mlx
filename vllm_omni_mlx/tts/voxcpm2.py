@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -97,6 +98,17 @@ def load_voxcpm2_model(config: VoxCPM2Config) -> Any:
         ) from exc
     model = load_model(config.model_ref)
     _unpin_cpu_buffers(model)
+    if not os.environ.get("VLLM_OMNI_VOXCPM2_EAGER"):
+        # the model's own built-in (DiT estimator + LM/encoder layers) —
+        # mlx-audio never calls it. Measured −6% p50 RTF (2.06 → 1.94, this
+        # M4): the per-patch step is launch-bound in the CFM solver loop,
+        # not inside these modules, so the win is small but free; the first
+        # request pays the trace build (~4 s). Set VLLM_OMNI_VOXCPM2_EAGER=1
+        # to serve eager (same escape shape as the Qwen3-TTS stream path).
+        try:
+            model.compile_model()
+        except Exception:
+            pass  # a compile failure must not take serving down
     return model
 
 

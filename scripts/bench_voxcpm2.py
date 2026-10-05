@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import os
 import queue
 import threading
 import time
@@ -42,7 +43,14 @@ def main() -> int:
     parser.add_argument("--chat-turns", type=int, default=4)
     parser.add_argument("--clone", action="store_true", help="also bench cloning from the bundled test_en.wav")
     parser.add_argument("--solo-only", action="store_true", help="skip the chat-coexistence phase")
+    parser.add_argument(
+        "--eager",
+        action="store_true",
+        help="serve eager (VLLM_OMNI_VOXCPM2_EAGER=1) — the A/B baseline vs the default compile_model()",
+    )
     args = parser.parse_args()
+    if args.eager:
+        os.environ["VLLM_OMNI_VOXCPM2_EAGER"] = "1"
 
     from vllm_omni_mlx.tts.voxcpm2 import VoxCPM2Config, VoxCPM2Service, load_voxcpm2_model, local_snapshot
 
