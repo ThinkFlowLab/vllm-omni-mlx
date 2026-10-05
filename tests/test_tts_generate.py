@@ -4,7 +4,15 @@ scales with text, RMS sits in a healthy band (precision bugs surface as
 silence or full-scale noise), voices differ, and greedy is deterministic.
 Weight-gated; human audition files are referenced on issue #15."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 import wave
 import io
 
@@ -30,7 +38,7 @@ def wav_stats(data: bytes):
     return frames / 24000, rms, peak
 
 
-class GenerationTest(unittest.TestCase):
+class GenerationTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(DEFAULT_MODEL) is None:

@@ -2,7 +2,15 @@
 checkpoint config — two preset voices, Auto vs explicit language, speaker
 slot exactness — gated on the cached checkpoint."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 
 import mlx.core as mx
 
@@ -12,7 +20,7 @@ from vllm_omni_mlx.tts.prompt_embeds import PromptEmbeds
 TEXT = "The quick brown fox jumps over the lazy dog."
 
 
-class PromptEmbedsTest(unittest.TestCase):
+class PromptEmbedsTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(DEFAULT_MODEL) is None:

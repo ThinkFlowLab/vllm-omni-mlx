@@ -2,7 +2,15 @@
 config, channel-summed codec embeds, and the config-derived codec-id
 suppression list — gated on the cached checkpoint."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 
 import mlx.core as mx
 
@@ -10,7 +18,7 @@ from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, l
 from vllm_omni_mlx.tts.talker import Talker
 
 
-class TalkerTest(unittest.TestCase):
+class TalkerTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if local_snapshot(DEFAULT_MODEL) is None:

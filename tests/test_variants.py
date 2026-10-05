@@ -15,13 +15,15 @@ from vllm_omni_mlx.tts.stream_loop import synthesize_stream
 PRESETS = {"vivian": 3065, "ryan": 3061}
 
 
-def stub_model(tts_model_type, spk_id=None):
+def stub_model(tts_model_type, spk_id=None, size="1b7"):
     """Minimal model surface for the seams touched before generation:
-    variants probe reads config.tts_model_type, PromptEmbeds reads
-    talker_config.spk_id / codec_language_id."""
+    variants probe reads config.tts_model_type (+ tts_model_size for the
+    instruct policy), PromptEmbeds reads talker_config.spk_id /
+    codec_language_id."""
     return SimpleNamespace(
         config=SimpleNamespace(
             tts_model_type=tts_model_type,
+            tts_model_size=size,
             talker_config=SimpleNamespace(
                 spk_id=spk_id,
                 codec_language_id={"chinese": 2055, "english": 2050},
@@ -61,9 +63,14 @@ class EnsureServedTest(unittest.TestCase):
         model = stub_model("base")
         self.assertEqual(variants.ensure_served(model, path="clone"), "base")
 
-    def test_custom_voice_clone_path_needs_base(self):
-        with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
-            variants.ensure_served(stub_model("custom_voice", PRESETS), path="clone")
+    def test_base_clone_stream_path_passes(self):
+        model = stub_model("base")
+        self.assertEqual(variants.ensure_served(model, path="clone_stream"), "base")
+
+    def test_custom_voice_clone_paths_need_base(self):
+        for path in ("clone", "clone_stream"):
+            with self.assertRaisesRegex(ValueError, "needs a Base checkpoint"):
+                variants.ensure_served(stub_model("custom_voice", PRESETS), path=path)
 
     def test_unknown_path_raises(self):
         with self.assertRaisesRegex(ValueError, "unknown generation path"):
@@ -123,6 +130,16 @@ class ServicePerTypeTest(unittest.TestCase):
         self.assertEqual(service.model_type, "custom_voice")
         with self.assertRaisesRegex(ValueError, "not one of the preset voices"):
             service.speech_bytes("hello", voice="chloe")
+
+    def test_instructions_rejected_on_small_model(self):
+        service = TTSService(stub_model("custom_voice", PRESETS, size="0b6"))
+        with self.assertRaisesRegex(ValueError, "1.7B CustomVoice"):
+            service.speech_bytes("hello", voice="vivian", instructions="very happy")
+
+    def test_instructions_pass_validation_on_1_7b(self):
+        service = TTSService(stub_model("custom_voice", PRESETS))
+        overrides = service._validated_overrides("hello", "vivian", 1.0, "very happy", None)
+        self.assertEqual(overrides, {"speaker": "vivian", "instruct": "very happy"})
 
 
 if __name__ == "__main__":

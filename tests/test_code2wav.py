@@ -1,6 +1,12 @@
 """code2wav wrapper (#11 / M1.2): chunked≡full stitching parity, output
 plausibility, and determinism — gated on the locally cached checkpoint."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
 
 import mlx.core as mx

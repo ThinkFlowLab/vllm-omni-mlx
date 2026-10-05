@@ -20,7 +20,7 @@ path               served types    entry
 preset (buffered)  custom_voice    :func:`generate.synthesize`
 preset (streaming) custom_voice    :func:`stream_loop.synthesize_stream`
 clone (buffered)   base            :func:`generate.synthesize_clone`
-clone (streaming)  — none yet      #50
+clone (streaming)  base            :func:`stream_loop.synthesize_clone_stream`
 design (buffered)  voice_design    :func:`generate.synthesize_design`
 design (streaming) voice_design    :func:`stream_loop.synthesize_stream` (#52)
 =================  ==============  =====================================
@@ -34,14 +34,21 @@ BASE = "base"
 CUSTOM_VOICE = "custom_voice"
 VOICE_DESIGN = "voice_design"
 
+#: ``tts_model_size`` tags the family ships ("0b6"/"1b7"); the small
+#: CustomVoice model was not trained for ``instruct`` — mlx-audio's own
+#: 0.6B guard is dead code (tests ``!= custom_voice`` inside the
+#: ``== custom_voice`` branch), so the rejection has to live here
+SMALL_SIZE = "0b6"
+
 #: every ``tts_model_type`` mlx-audio's qwen3_tts knows
 KNOWN = (BASE, CUSTOM_VOICE, VOICE_DESIGN)
 
 #: generation path name → the types this build synthesizes on it
 SERVED_BY_PATH = {
     "preset": (CUSTOM_VOICE,),
-    "clone": (BASE,),  # buffered only; streaming cloning is #50
-    "design": (VOICE_DESIGN,),  # buffered only; streaming design is #52
+    "clone": (BASE,),  # buffered
+    "clone_stream": (BASE,),  # streaming (#50)
+    "design": (VOICE_DESIGN,),  # buffered (#51) + streaming (#52)
 }
 
 #: kept from #47 for the preset paths — ``SERVED_BY_PATH["preset"]``
@@ -50,9 +57,13 @@ SERVED = SERVED_BY_PATH["preset"]
 _TRACKING = {
     (BASE, "preset"): (
         "Base models have no preset voices — send voice as an object with "
-        "ref_audio/ref_text to clone a voice (buffered #49; streaming #50)"
+        "ref_audio/ref_text to clone a voice (buffered and streaming, #49/#50)"
     ),
     (CUSTOM_VOICE, "clone"): (
+        "voice cloning needs a Base checkpoint; CustomVoice serves preset "
+        "voices (send voice as a speaker string)"
+    ),
+    (CUSTOM_VOICE, "clone_stream"): (
         "voice cloning needs a Base checkpoint; CustomVoice serves preset "
         "voices (send voice as a speaker string)"
     ),
@@ -60,7 +71,12 @@ _TRACKING = {
         "VoiceDesign checkpoints have no preset voices — the voice comes from "
         "`instructions` (a text description); preset `voice` is not accepted"
     ),
+    ),
     (VOICE_DESIGN, "clone"): (
+        "voice cloning needs a Base checkpoint; VoiceDesign takes a text "
+        "description in `instructions` (#46)"
+    ),
+    (VOICE_DESIGN, "clone_stream"): (
         "voice cloning needs a Base checkpoint; VoiceDesign takes a text "
         "description in `instructions` (#46)"
     ),
@@ -94,6 +110,13 @@ def require_served(variant: str, path: str = "preset") -> None:
     if variant in SERVED_BY_PATH[path]:
         return
     raise ValueError(_TRACKING.get((variant, path), f"Qwen3-TTS '{variant}' models are not served on the {path} path yet"))
+
+
+def model_size(model: Any) -> str:
+    """The checkpoint's ``tts_model_size`` tag ("" when absent — older or
+    novel checkpoints simply aren't small)."""
+    raw = getattr(model.config, "tts_model_size", None)
+    return raw.strip().lower() if isinstance(raw, str) else ""
 
 
 def ensure_served(model: Any, path: str = "preset") -> str:

@@ -3,7 +3,15 @@ checkpoint is cached locally — the full-checkpoint load that validates
 mlx-audio's tensor mapping end to end."""
 
 import sys
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 from unittest import mock
 
 from vllm_omni_mlx.tts.config import (
@@ -44,7 +52,7 @@ class LoaderGuardTest(unittest.TestCase):
         self.assertIn("vllm-omni-mlx[tts]", str(ctx.exception))
 
 
-class CheckpointMappingTest(unittest.TestCase):
+class CheckpointMappingTest(ReleaseAfterClass, unittest.TestCase):
     """mlx-audio owns the checkpoint→MLX mapping; a full load of the model with
     strict weight application IS the no-orphan check. Runs where the snapshot
     is cached (~2.2 GiB), skips in CI."""

@@ -2,7 +2,15 @@
 auth, formats, and model listing with a fake service; plus a weight-gated
 real round-trip through the actual TTS model."""
 
+import os
+
+# weight-gated loads resolve from the local HF cache; direct hub access
+# only adds a hang when the network is flaky (offline mode keeps loads fast)
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import unittest
+
+from tests._teardown import ReleaseAfterClass
 from unittest import mock
 
 from starlette.testclient import TestClient
@@ -137,7 +145,7 @@ class AudioRoutesTest(unittest.TestCase):
         self.assertEqual(bad_voice.status_code, 400)
 
 
-class RealSpeechRoundTripTest(unittest.TestCase):
+class RealSpeechRoundTripTest(ReleaseAfterClass, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from vllm_omni_mlx.tts.config import DEFAULT_MODEL, TTSConfig, load_tts_model, local_snapshot

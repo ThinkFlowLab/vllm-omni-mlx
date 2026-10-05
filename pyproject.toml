@@ -19,6 +19,7 @@ omni = ["mlx-vlm>=0.7"]
 tts = ["mlx-audio>=0.5.7,<0.6"]
 
 [project.scripts]
+# serve/tts subcommands, upstream vllm-omni's `vllm serve <model> --omni` shape
 vllm-omni-mlx = "vllm_omni_mlx.__main__:main"
 
 [tool.setuptools]

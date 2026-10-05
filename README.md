@@ -94,19 +94,20 @@ mlx-lm 0.32 and mlx-vlm 0.7.
 
 ```sh
 # omni-modality server: Qwen3-Omni chat + speech synthesis in one process
-vllm-omni-mlx --model mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit \
+vllm-omni-mlx serve mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit \
     --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit      # needs [omni] + [tts]
 
 # speech-only server
-vllm-omni-mlx --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit
+vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni
 ```
 
 Qwen3-Omni serves text-out chat today (speech-out chat is in progress); the 30B-A3B
 4-bit checkpoint is ~22 GB, so pick a Mac with the memory for it.
 
 Options: `--host` (default `127.0.0.1`), `--port` (default `8000`), `--backend auto|text|omni`
-(auto sniffs `config.json` for vision/audio sections), `--api-key` to require `Authorization: Bearer …`
-or `x-api-key`.
+(auto sniffs `config.json` for vision/audio sections), `--omni` (serve the model omni-modally:
+a Qwen3-TTS checkpoint serves `/v1/audio/*`, anything else forces the omni backend),
+`--api-key` to require `Authorization: Bearer …` or `x-api-key`.
 
 Performance flags:
 
@@ -127,7 +128,7 @@ re-prefill, so correctness never depends on the cache).
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI (streaming via SSE, `stop`, multimodal `image_url` / `input_audio` content parts) |
 | `POST /v1/messages` | Anthropic (streaming via SSE, `stop_sequences`, base64/URL image blocks) |
-| `POST /v1/audio/speech` | OpenAI audio (`wav` 24 kHz mono / raw `pcm`; needs `--tts-model`, `[tts]` extra) |
+| `POST /v1/audio/speech` | OpenAI audio (`wav` 24 kHz mono / raw `pcm`; needs a TTS model via `--omni` or `--tts-model`, `[tts]` extra) |
 | `GET /v1/audio/voices` | preset CustomVoice speakers for the loaded TTS model (empty on Base/VoiceDesign checkpoints) |
 | `GET /v1/models` | OpenAI model list |
 | `GET /health` | liveness |
@@ -136,7 +137,7 @@ Speech synthesis quickstart:
 
 ```sh
 pip install 'vllm-omni-mlx[tts]'
-vllm-omni-mlx --tts-model mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --api-key demo
+vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
 curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
     -d '{"input": "Hello from vllm omni em el ex.", "voice": "vivian"}' \
     http://127.0.0.1:8000/v1/audio/speech -o speech.wav
@@ -150,7 +151,7 @@ field **is the voice** — a description like "A cheerful young female voice wit
 high pitch and energetic tone" (required; `voice` is rejected — presets don't
 exist there). The field's meaning is set by the loaded checkpoint, mirroring
 mlx-audio's own mapping; VoiceDesign works buffered and streaming, on the same
-first-chunk fast path as CustomVoice. Streaming: pass `"stream": true` for chunked raw
+first-chunk fast path as CustomVoice (compiled decode, #65). Streaming: pass `"stream": true` for chunked raw
 PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
 WAV — first audio typically lands in under 0.5 s instead of after the full
 generation; `streaming_interval` (default 0.5 s) trades first-audio latency
@@ -159,6 +160,32 @@ first chunk as soon as that much audio exists (quantized to a power-of-two
 frame bucket, so compiled decode shapes stay bounded) — measured time to
 first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
 `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
+
+**Voice cloning** (Base checkpoints, e.g.
+`mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit`): `voice` is instead an object
+carrying a short reference clip and its transcript —
+
+```sh
+vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit --omni --api-key demo
+REF=$(base64 -i reference.wav)
+curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
+    -d "{\"input\": \"Any text in the cloned voice.\", \"voice\": {\"ref_audio\": \"$REF\", \"ref_text\": \"transcript of the reference clip\"}}" \
+    http://127.0.0.1:8000/v1/audio/speech -o cloned.wav
+```
+
+The clip is decoded and resampled to 24 kHz mono server-side (any format
+miniaudio/ffmpeg reads); keep it 0.5–30 s of clean speech. Base checkpoints
+have no preset voices (`GET /v1/audio/voices` returns `[]`) and CustomVoice
+checkpoints ignore cloning — send the form matching your checkpoint.
+Cloning streams too: `stream: true` + the voice object emits chunked PCM on
+the same first-chunk fast path as presets (the vendored loop is
+token-exact against mlx-audio's ICL loop; chunked audio differs from the
+buffered WAV at waveform level by nature — the vocoder is stateful).
+
+The 0.6B CustomVoice variant
+(`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit`) serves the same
+preset voices and endpoint; `instructions` are rejected with a 400 there —
+emotion/style prompts are a 1.7B capability.
 
 OpenAI-style request:
 
