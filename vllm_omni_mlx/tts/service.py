@@ -110,9 +110,10 @@ class TTSService:
         audio lands under ~0.5 s; smaller buys faster first audio at the cost
         of choppier cadence (total RTF is interval-independent, ~0.9 on the
         4-bit model — see #39's sweep). streaming_initial_interval (default
-        0.2 s) is the #39 fast path: the first chunk is emitted as soon as
-        that much audio exists, independent of the steady chunk size, so
-        TTFA is not floored by streaming_interval. For cloning, the
+        0.08 s — one codec frame) is the #39 fast path: the first chunk is
+        emitted as soon as that much audio exists, independent of the steady
+        chunk size, so TTFA is not floored by streaming_interval (measured
+        −35 ms vs the old 0.2 s default at unchanged RTF, #77). For cloning, the
         reference clip is decoded and validated before the stream starts —
         request errors never wait on the lock.
         """

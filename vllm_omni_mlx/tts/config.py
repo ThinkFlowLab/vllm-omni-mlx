@@ -33,8 +33,10 @@ class TTSConfig:
     streaming_interval: float = 2.0
     # first-chunk size for the streaming path (#39 fast path): seconds of
     # audio emitted as soon as they exist, quantized to a power-of-two frame
-    # bucket ≤ streaming_interval's chunk (see tts/stream_loop.py)
-    streaming_initial_interval: float = 0.2
+    # bucket ≤ streaming_interval's chunk (see tts/stream_loop.py). Default
+    # 0.08 s = one codec frame: measured −35 ms time-to-first-audio vs 0.2 s
+    # at unchanged RTF (#77) — the choppier first chunk is the trade
+    streaming_initial_interval: float = 0.08
 
     def with_overrides(self, **overrides: Any) -> "TTSConfig":
         known = {k: v for k, v in overrides.items() if v is not None and k in TTSConfig.__dataclass_fields__ and k != "model_ref"}

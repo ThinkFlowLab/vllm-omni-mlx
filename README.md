@@ -155,10 +155,12 @@ first-chunk fast path as CustomVoice (compiled decode, #65). Streaming: pass `"s
 PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
 WAV — first audio typically lands in under 0.5 s instead of after the full
 generation; `streaming_interval` (default 0.5 s) trades first-audio latency
-for chunk cadence, and `streaming_initial_interval` (default 0.2 s) emits the
-first chunk as soon as that much audio exists (quantized to a power-of-two
-frame bucket, so compiled decode shapes stay bounded) — measured time to
-first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
+for chunk cadence, and `streaming_initial_interval` (default 0.08 s, one
+codec frame) emits the first chunk as soon as that much audio exists
+(quantized to a power-of-two frame bucket, so compiled decode shapes stay
+bounded) — measured time to first audio: ~130 ms at the default on a quiet
+M4, −35 ms vs the older 0.2 s default at unchanged RTF (#77); raise it to
+0.2 for a chunkier first beat. One-shot synthesis without a server:
 `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
 
 **Voice cloning** (Base checkpoints, e.g.

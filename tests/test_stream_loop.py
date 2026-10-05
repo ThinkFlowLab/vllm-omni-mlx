@@ -124,6 +124,17 @@ class StreamLoopTest(ReleaseAfterClass, unittest.TestCase):
         self.assertLessEqual(chunks[-1].shape[0], 6 * SAMPLES_PER_FRAME)
         self.assertGreater(chunks[-1].shape[0], 0)
 
+    def test_default_config_first_chunk_is_one_frame(self):
+        # the 0.08 s streaming_initial_interval default (#77, −35 ms TTFA at
+        # unchanged RTF) buckets to a single codec frame
+        chunks = list(
+            synthesize_stream(
+                self.model, self.config, EN, speaker="vivian", temperature=0.0, max_tokens=24
+            )
+        )
+        self.assertGreaterEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].shape[0], SAMPLES_PER_FRAME)
+
     def test_padded_remainder_is_trimmed_exact(self):
         # pad-and-trim safety: the decoder is causal, so padding the final
         # chunk to a compiled bucket shape must not disturb the true frames'
