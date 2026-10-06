@@ -12,13 +12,13 @@ Easy, fast, and lightweight omni-modality model serving for Apple Silicon
 </h3>
 
 <p align="center">
-| <a href="docs/architecture.md"><b>Architecture</b></a> | <a href="docs/speech.md"><b>Speech Guide</b></a> | <a href="docs/profiling.md"><b>Profiling Guide</b></a> | <a href="examples/"><b>Examples</b></a> |
+| <a href="docs/architecture.md"><b>Architecture</b></a> | <a href="docs/speech.md"><b>Speech Guide</b></a> | <a href="docs/profiling.md"><b>Profiling Guide</b></a> | <a href="examples/"><b>Examples</b></a> | <a href="CONTRIBUTING.md"><b>Contributing</b></a> |
 </p>
 
 ---
 
 *Latest News* 🔥
-- [2026/10] **v0.1.0 released** — the Qwen3-TTS family is fully served on Apple Silicon: preset/instructed voices, zero-shot voice cloning, and text-described voices (VoiceDesign), buffered and streaming, across all five 4-bit checkpoints (0.6B/1.7B). First audio in **~0.1 s** (88 ms on M1 Max), sustained RTF **0.29–0.45**, bit-reproducible streams — numbers reproduced on two machines ([#84](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/84)).
+- [2026/10] **[v0.1.0 released](https://github.com/ThinkFlowLab/vllm-omni-mlx/releases/tag/v0.1.0)** — the Qwen3-TTS family is fully served on Apple Silicon: preset/instructed voices, zero-shot voice cloning, and text-described voices (VoiceDesign), buffered and streaming, across all five 4-bit checkpoints (0.6B/1.7B). First audio in **~0.1 s** (88 ms on M1 Max), sustained RTF **0.29–0.45**, bit-reproducible streams — numbers reproduced on two machines ([#84](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/84)).
 - [2026/10] Batch-1 latency stack: compiled per-frame decode, per-voice prefix cache, single-codec-frame first chunk for TTS; cross-turn prompt cache (8.3× faster TTFT), `--draft-model` and `--kv-bits` for chat.
 
 ---
@@ -76,14 +76,17 @@ pip install -e '.[tts]'     # + speech synthesis (mlx-audio)
 | Install | Direct deps | Resolved packages | Disk |
 | --- | --- | --- | --- |
 | core | `mlx-lm`, `starlette`, `uvicorn` | 38 | ~440 MB |
+| + `[tts]` | + `mlx-audio` | 44 | ~560 MB |
 | + `[omni]` | + `mlx-vlm` | 59 | ~750 MB |
 
 The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transformers`,
 `tokenizers`, `huggingface_hub`) plus starlette/uvicorn and almost nothing else —
-**no FastAPI, no pydantic, no torch**. The `[omni]` extra adds ~315 MB through
-`mlx-vlm` (opencv, pillow, scipy, mlx-audio — which does drag in fastapi/pydantic,
-contained to the optional path). Measured on macOS arm64 / Python 3.13 with
-mlx-lm 0.32 and mlx-vlm 0.7.
+**no FastAPI, no pydantic, no torch**. The `[tts]` extra adds ~125 MB through
+`mlx-audio` (miniaudio, sounddevice — still no torch). The `[omni]` extra adds
+~315 MB through `mlx-vlm` (opencv, pillow, scipy — and mlx-audio, so `[omni]`
+implies `[tts]`; that path does drag in fastapi/pydantic, contained to the
+optional extra). Measured on macOS arm64 / Python 3.13 with mlx-lm 0.32,
+mlx-vlm 0.7, and mlx-audio 0.5.7.
 
 ### Run
 
