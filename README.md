@@ -159,18 +159,5 @@ See [docs/architecture.md](docs/architecture.md) for the architecture diagram an
 
 ## Contributing
 
-```sh
-python -m unittest discover -s tests   # stdlib unittest, no extra deps
-```
-
-Weight-gated tests (TTS, prompt cache) run against locally cached checkpoints and skip
-where the weights are absent — a green CI run does not by itself mean the weight-dependent
-paths were exercised.
-
-Profiling and benchmarking on Apple Silicon: [docs/profiling.md](docs/profiling.md) —
-timing harness (time the `mx.eval` bracket, mind GPU clock ramp), Metal GPU capture
-for per-kernel truth, powermetrics/xctrace for SoC counters.
-
-Layout: `schemas.py` (OpenAI/Anthropic → one internal request), `backends.py` (mlx-lm text backend,
-mlx-vlm omni backend, stop-sequence filtering), `server.py` (routes, SSE), `__main__.py` (CLI),
-`tts/` (Qwen3-TTS pipeline: config, loader, talker, code2wav, streaming loop).
+See [CONTRIBUTING.md](CONTRIBUTING.md) — setup, running the (weight-gated) tests,
+the A/B rule for performance PRs, and the repository layout.
