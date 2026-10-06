@@ -92,7 +92,7 @@ def _apply_rope_matmul(x: mx.array, cos: mx.array, sin: mx.array, p: mx.array) -
 # checkpoint must take its traces with it)
 # ---------------------------------------------------------------------------
 
-_CLOSURES: dict[tuple[int, int], tuple[weakref.ref, weakref.ref]] = {}
+_CLOSURES: dict[tuple, tuple[weakref.ref, weakref.ref]] = {}
 
 
 class _StepClosures:
@@ -302,12 +302,15 @@ def closures_for(model: Any, config: VoxCPM2Config) -> _StepClosures:
     MLX compiled functions are thread-bound — a closure traced on one
     thread refuses to evaluate on another ("There is no Stream(gpu, …) in
     current thread") — so traces are keyed by thread as well as model.
-    The entry validates model identity through a weakref: a released and
-    garbage-collected checkpoint's id can be REUSED by the next load (the
-    weight-gated batteries hit exactly that), and a stale entry would
-    hand the new model traces bound to a dead thread.
+    The solver's t_span and cfg strength are BAKED into the trace at
+    build, so they join the key: changing ``inference_timesteps`` or
+    ``cfg_value`` at runtime rebuilds instead of silently serving stale
+    traces. The entry validates model identity through a weakref: a
+    released and garbage-collected checkpoint's id can be REUSED by the
+    next load (the weight-gated batteries hit exactly that), and a stale
+    entry would hand the new model traces bound to a dead thread.
     """
-    key = (id(model), threading.get_ident())
+    key = (id(model), threading.get_ident(), config.inference_timesteps, config.cfg_value)
     entry = _CLOSURES.get(key)
     if entry is not None:
         model_ref, fresh_ref = entry
