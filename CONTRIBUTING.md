@@ -66,6 +66,62 @@ python -m unittest tests.test_stream_loop            # one file at a time in pra
   past it means re-verifying every vendored function against the new
   source (an adaptation PR, not a version bump).
 
+## Contributor self-review
+
+Before requesting review, inspect the complete diff against the target branch,
+check scope and correctness, and record commands, results, and checks not run.
+Keep documentation and PR claims aligned with implemented behavior. Contributor
+self-review helps maintainers; it does not replace maintainer review.
+
+Agent-assisted review entry points live in
+[`.agents/skills/`](.agents/skills/):
+[precheck-pr](.agents/skills/precheck-pr/SKILL.md) for a readiness pass,
+[self-review](.agents/skills/self-review/SKILL.md) for a full contributor review,
+and [vllm-omni-mlx-review](.agents/skills/vllm-omni-mlx-review/SKILL.md) for
+reviewing a PR. All three paths apply the artifact and size rules below.
+
+### Committed artifact hygiene
+
+Review artifacts by their maintained purpose and actual consumer, not by file
+extension. Keep necessary configuration, request examples, benchmark inputs,
+and small deterministic fixtures or reference oracles. Identify the test, tool,
+or maintained workflow that consumes each retained artifact.
+
+One-off run summaries, response dumps, cache statistics, profiler output, agent
+process notes, and duplicate historical results belong in durable artifact
+storage or PR/CI evidence, not the source tree. A documentation or PR link alone
+does not justify committing generated output. Preserve raw measurements,
+failures, and provenance with links to the exact revision or run; do not discard
+evidence to shrink a diff or hide it in a committed archive.
+
+Before removing redundant output, check callers, links, and reproduction
+commands. Keep replay inputs and expected responses intact, verify their hashes,
+and rerun affected replay or documentation checks. See the
+[self-review checklist](.agents/skills/self-review/SKILL.md#committed-artifact-hygiene).
+
+### Large code changes
+
+PRs with **more than 3,000 changed lines of authored code** need extra contributor
+attention before requesting review. Count additions plus deletions against the
+PR's merge base in source files, tests, and build or validation scripts. Report
+this count separately from the total diff size; exclude documentation, generated
+output, lockfiles, and static fixtures from the code count, while still reviewing
+those files for relevance and correctness.
+
+- Complete a full self-review of every affected component and its integration
+  boundaries. A quick precheck alone is insufficient; keep the PR in draft until
+  the contributor self-review is complete.
+- Consider splitting independent features, refactors, and cleanup into focused
+  PRs. If the change needs to stay together, explain why in the PR description
+  and provide a component map and suggested review order.
+- Include the code-line count and a validation summary for each affected area in
+  the PR description: commands, results, and unverified behavior with reasons.
+  Cover changed interfaces between components as well as individual components.
+
+Size signals the need for closer review; it is not itself a correctness finding.
+Choose checks based on the changed behavior and risk. Crossing this threshold
+alone does not require GPU benchmarks or other expensive experiments.
+
 ## Repository layout
 
 | Path | Responsibility |
