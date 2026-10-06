@@ -1,19 +1,25 @@
 # vllm-omni-mlx
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/vllm-omni-mlx-logo-dark.svg">
+    <img alt="vLLM-Omni-MLX" src="assets/vllm-omni-mlx-logo-light.svg" width="620">
+  </picture>
+</p>
+
 <h3 align="center">
 Easy, fast, and lightweight omni-modality model serving for Apple Silicon
 </h3>
 
 <p align="center">
-| <a href="docs/architecture.md"><b>Architecture</b></a> | <a href="docs/profiling.md"><b>Profiling Guide</b></a> | <a href="examples/"><b>Examples</b></a> |
+| <a href="docs/architecture.md"><b>Architecture</b></a> | <a href="docs/speech.md"><b>Speech Guide</b></a> | <a href="docs/profiling.md"><b>Profiling Guide</b></a> | <a href="examples/"><b>Examples</b></a> | <a href="CONTRIBUTING.md"><b>Contributing</b></a> |
 </p>
 
 ---
 
 *Latest News* 🔥
-- [2026/10] Streaming speech: `"stream": true` chunked PCM on `/v1/audio/speech`, with a first-chunk fast path — time to first audio 132–290 ms and sustained RTF ~0.9 on a quiet M4.
-- [2026/10] M1 speech milestone: Qwen3-TTS CustomVoice synthesis on MLX — `/v1/audio/speech` + `/v1/audio/voices`, one-shot `tts` CLI, 64 weight-gated tests.
-- [2026/10] v0.1 core: OpenAI + Anthropic compatible APIs on Starlette, cross-turn prompt cache (8.3× faster TTFT on continued conversations), `--draft-model` and `--kv-bits` performance flags.
+- [2026/10] **[v0.1.0 released](https://github.com/ThinkFlowLab/vllm-omni-mlx/releases/tag/v0.1.0)** — the Qwen3-TTS family is fully served on Apple Silicon: preset/instructed voices, zero-shot voice cloning, and text-described voices (VoiceDesign), buffered and streaming, across all five 4-bit checkpoints (0.6B/1.7B). First audio in **~0.1 s** (88 ms on M1 Max), sustained RTF **0.29–0.45**, bit-reproducible streams — numbers reproduced on two machines ([#84](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/84)).
+- [2026/10] Batch-1 latency stack: compiled per-frame decode, per-voice prefix cache, single-codec-frame first chunk for TTS; cross-turn prompt cache (8.3× faster TTFT), `--draft-model` and `--kv-bits` for chat.
 
 ---
 
@@ -31,7 +37,8 @@ in a single process built for batch-1 low latency.
 
 vllm-omni-mlx is fast with:
 
-- Streaming TTS first-chunk fast path: first audio in 132–290 ms instead of after full generation
+- Streaming TTS: first audio in ~0.1 s (per-voice prefix cache + single-codec-frame first chunk), sustained RTF 0.29–0.45 across machines
+- Compiled per-frame decode (fused predictor, shapeless talker step) and bitwise-reproducible streams per voice
 - Cross-turn prompt cache: continuing a conversation prefills only the new suffix (measured 8.3× faster time-to-first-token, text engine)
 - `--draft-model` speculative decoding and `--kv-bits` quantized KV cache for long contexts (text engine)
 
@@ -43,31 +50,22 @@ vllm-omni-mlx is flexible and easy to use with:
 
 ## Supported Models
 
-Like vLLM-Omni, vllm-omni-mlx targets omni-modality serving across the speech stack — ASR (speech in), TTS (speech out), and any-to-any chat. Plain text-LLM serving (vLLM proper and mlx-lm's own server territory) and vision-language (image-in, text-out) models are not supported categories. Supported:
+| Modality | Examples | Status |
+| --- | --- | --- |
+| **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
+| **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
+| **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
+| **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
 
-- **Omni-modality models** (Qwen3-Omni — text, image, and audio in; text and speech out)
-- **ASR models** (e.g. Whisper, Parakeet, Qwen3-ASR, Voxtral, SenseVoice)
-- **TTS models** (Qwen3-TTS CustomVoice, VoiceDesign; VoxCPM2)
+| Modality | Examples | Status |
+| --- | --- | --- |
+| **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B); VoxCPM2 (zero-shot · cloned · described voice, 30+ languages, 48 kHz) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
+| **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
+| **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
+| **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
 
-| Modality | Models | Example HF models | Engine | Status |
-| --- | --- | --- | --- | --- |
-| Text / image / audio in → text + speech out | Qwen3-Omni | `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` | `mlx-vlm` (`[omni]` extra) | ⚠️ via mlx-vlm — speech-out chat not plumbed yet, not verified here <sup>1</sup> |
-| Speech in → text out (ASR) | Whisper, Parakeet, Qwen3-ASR, Qwen2-Audio, Voxtral, SenseVoice, Moonshine, … <sup>2</sup> | `mlx-community/whisper-large-v3-turbo` | `mlx-audio` (`[tts]` extra) | 🚧 planned — engine support via mlx-audio stt, transcription endpoint not built yet |
-| Text → speech out | Qwen3-TTS-12Hz-1.7B-CustomVoice | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end (4-bit) <sup>3</sup> |
-| Text → speech out (described voice) | Qwen3-TTS-12Hz-1.7B-VoiceDesign | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end buffered + streaming (4-bit, weight-gated tests) <sup>3</sup> |
-| Text → speech out (zero-shot / cloned / described voice, 30+ languages, 48 kHz) | VoxCPM2 | `mlx-community/VoxCPM2-4bit` | `mlx-audio` (`[tts]` extra) | ✅ verified end-to-end buffered (4-bit, weight-gated tests); stream delivers the finished buffer — incremental streaming + compiled decode are follow-up work <sup>4</sup> |
-
-<sup>1</sup> mlx-vlm 0.7 ships the full Qwen3-Omni thinker/talker implementation; this server currently
-consumes its text output only — speech-out chat and video input are future work. The 30B-A3B MoE
-weighs ~22 GB at 4-bit, so it needs a large-memory Mac. Vision-language and text-only checkpoints
-still load through their engines but are not supported categories.
-<sup>2</sup> mlx-audio 0.5.7's stt package implements these families (Whisper is its default); serving
-them on an OpenAI-style `/v1/audio/transcriptions` endpoint is planned. Families listed are present
-in the installed engine, not verified through this server.
-<sup>3</sup> Verified on the 4-bit quantization; the bf16 variant loads but is untested. `speed` must be 1.0 for now.
-<sup>4</sup> VoxCPM2 has no speaker presets: `voice: "default"` speaks zero-shot, `instructions` designs a voice,
-and cloning rides the same `voice` object as Qwen3-TTS Base (`ref_audio` required, `ref_text` accepted but
-unused — VoxCPM2 conditions on the clip alone). Output is 48 kHz mono.
+Text-only LLMs and image-in/text-out VLMs load through their engines but are
+not this server's target categories.
 
 ## Getting Started
 
@@ -85,14 +83,17 @@ pip install -e '.[tts]'     # + speech synthesis (mlx-audio)
 | Install | Direct deps | Resolved packages | Disk |
 | --- | --- | --- | --- |
 | core | `mlx-lm`, `starlette`, `uvicorn` | 38 | ~440 MB |
+| + `[tts]` | + `mlx-audio` | 44 | ~560 MB |
 | + `[omni]` | + `mlx-vlm` | 59 | ~750 MB |
 
 The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transformers`,
 `tokenizers`, `huggingface_hub`) plus starlette/uvicorn and almost nothing else —
-**no FastAPI, no pydantic, no torch**. The `[omni]` extra adds ~315 MB through
-`mlx-vlm` (opencv, pillow, scipy, mlx-audio — which does drag in fastapi/pydantic,
-contained to the optional path). Measured on macOS arm64 / Python 3.13 with
-mlx-lm 0.32 and mlx-vlm 0.7.
+**no FastAPI, no pydantic, no torch**. The `[tts]` extra adds ~125 MB through
+`mlx-audio` (miniaudio, sounddevice — still no torch). The `[omni]` extra adds
+~315 MB through `mlx-vlm` (opencv, pillow, scipy — and mlx-audio, so `[omni]`
+implies `[tts]`; that path does drag in fastapi/pydantic, contained to the
+optional extra). Measured on macOS arm64 / Python 3.13 with mlx-lm 0.32,
+mlx-vlm 0.7, and mlx-audio 0.5.7.
 
 ### Run
 
@@ -130,89 +131,27 @@ re-prefill, so correctness never depends on the cache).
 
 | Endpoint | Format |
 | --- | --- |
-| `POST /v1/chat/completions` | OpenAI (streaming via SSE, `stop`, multimodal `image_url` / `input_audio` content parts) |
-| `POST /v1/messages` | Anthropic (streaming via SSE, `stop_sequences`, base64/URL image blocks) |
-| `POST /v1/audio/speech` | OpenAI audio (`wav` mono / raw `pcm`; 24 kHz on Qwen3-TTS, 48 kHz on VoxCPM2; needs a TTS model via `--omni` or `--tts-model`, `[tts]` extra) |
-| `GET /v1/audio/voices` | preset speakers for the loaded TTS model (`["default"]` on VoxCPM2, empty on Base/VoiceDesign checkpoints) |
-| `GET /v1/models` | OpenAI model list |
-| `GET /health` | liveness |
+| `POST /v1/chat/completions` | OpenAI (SSE streaming, multimodal content parts) |
+| `POST /v1/messages` | Anthropic (SSE streaming, image blocks) |
+| `POST /v1/audio/speech` | OpenAI audio (`wav` / chunked `pcm` with `stream: true`) |
+| `GET /v1/audio/voices` | preset speakers of the loaded TTS model |
+| `GET /v1/models`, `GET /health` | model list, liveness |
 
-Speech synthesis quickstart:
+Bring up a speech server and talk to it:
 
 ```sh
 pip install 'vllm-omni-mlx[tts]'
 vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
 curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
-    -d '{"input": "Hello from vllm omni em el ex.", "voice": "vivian"}' \
+    -d '{"input": "Hello from vllm omni mlx.", "voice": "vivian"}' \
     http://127.0.0.1:8000/v1/audio/speech -o speech.wav
 ```
 
-`voice` picks a preset speaker (`GET /v1/audio/voices` lists them), `instructions`
-add an emotion/style prompt, `language` forces a language (default auto);
-`speed` must be 1.0 for now. On a VoiceDesign checkpoint
-(`mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit`) the same `instructions`
-field **is the voice** — a description like "A cheerful young female voice with
-high pitch and energetic tone" (required; `voice` is rejected — presets don't
-exist there). The field's meaning is set by the loaded checkpoint, mirroring
-mlx-audio's own mapping; VoiceDesign works buffered and streaming, on the same
-first-chunk fast path as CustomVoice (compiled decode, #65). Streaming: pass `"stream": true` for chunked raw
-PCM (24 kHz 16-bit mono, `X-Audio-*` response headers) instead of a buffered
-WAV — first audio typically lands in under 0.5 s instead of after the full
-generation; `streaming_interval` (default 0.5 s) trades first-audio latency
-for chunk cadence, and `streaming_initial_interval` (default 0.2 s) emits the
-first chunk as soon as that much audio exists (quantized to a power-of-two
-frame bucket, so compiled decode shapes stay bounded) — measured time to
-first audio: 195–290 ms at the default, 132 ms at 0.08 s. One-shot synthesis without a server:
-`vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`. See `examples/`.
-
-**Voice cloning** (Base checkpoints, e.g.
-`mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit`): `voice` is instead an object
-carrying a short reference clip and its transcript —
-
-```sh
-vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit --omni --api-key demo
-REF=$(base64 -i reference.wav)
-curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
-    -d "{\"input\": \"Any text in the cloned voice.\", \"voice\": {\"ref_audio\": \"$REF\", \"ref_text\": \"transcript of the reference clip\"}}" \
-    http://127.0.0.1:8000/v1/audio/speech -o cloned.wav
-```
-
-The clip is decoded and resampled to 24 kHz mono server-side (any format
-miniaudio/ffmpeg reads); keep it 0.5–30 s of clean speech. Base checkpoints
-have no preset voices (`GET /v1/audio/voices` returns `[]`) and CustomVoice
-checkpoints ignore cloning — send the form matching your checkpoint.
-Cloning streams too: `stream: true` + the voice object emits chunked PCM on
-the same first-chunk fast path as presets (the vendored loop is
-token-exact against mlx-audio's ICL loop; chunked audio differs from the
-buffered WAV at waveform level by nature — the vocoder is stateful).
-
-The 0.6B CustomVoice variant
-(`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit`) serves the same
-preset voices and endpoint; `instructions` are rejected with a 400 there —
-emotion/style prompts are a 1.7B capability.
-
-OpenAI-style request:
-
-```sh
-curl http://127.0.0.1:8000/v1/chat/completions -d '{
-  "model": "any",
-  "messages": [{"role": "user", "content": "Say hi in three words."}],
-  "max_tokens": 32
-}'
-```
-
-Anthropic-style request:
-
-```sh
-curl http://127.0.0.1:8000/v1/messages -d '{
-  "model": "any",
-  "max_tokens": 32,
-  "messages": [{"role": "user", "content": "Say hi in three words."}]
-}'
-```
-
-Both accept `"stream": true`; media arrives as data URLs (OpenAI `image_url`) or
-base64/URL sources (Anthropic `image` blocks). Either way it reaches the model the same way.
+Chat works the same way on the same server (`/v1/chat/completions`,
+`/v1/messages`, both with `"stream": true`). Voices, instructions, voice
+cloning, streaming knobs, and per-checkpoint differences: the
+**[speech guide](docs/speech.md)**; runnable scripts in [`examples/`](examples/);
+one-shot synthesis without a server: `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`.
 
 ## Design Notes & Limits
 
@@ -230,18 +169,5 @@ See [docs/architecture.md](docs/architecture.md) for the architecture diagram an
 
 ## Contributing
 
-```sh
-python -m unittest discover -s tests   # stdlib unittest, no extra deps
-```
-
-Weight-gated tests (TTS, prompt cache) run against locally cached checkpoints and skip
-where the weights are absent — a green CI run does not by itself mean the weight-dependent
-paths were exercised.
-
-Profiling and benchmarking on Apple Silicon: [docs/profiling.md](docs/profiling.md) —
-timing harness (time the `mx.eval` bracket, mind GPU clock ramp), Metal GPU capture
-for per-kernel truth, powermetrics/xctrace for SoC counters.
-
-Layout: `schemas.py` (OpenAI/Anthropic → one internal request), `backends.py` (mlx-lm text backend,
-mlx-vlm omni backend, stop-sequence filtering), `server.py` (routes, SSE), `__main__.py` (CLI),
-`tts/` (Qwen3-TTS pipeline: config, loader, talker, code2wav, streaming loop).
+See [CONTRIBUTING.md](CONTRIBUTING.md) — setup, running the (weight-gated) tests,
+the A/B rule for performance PRs, and the repository layout.
