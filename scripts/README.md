@@ -75,3 +75,9 @@ Operational and development scripts.
   ```sh
   python scripts/profile_compiled_loop.py --max-tokens 400
   ```
+- `acc_all_checkpoints.py` — the unified accuracy battery: every served TTS
+  checkpoint × its served paths through the real request surface, one
+  subprocess per model (one-heavy-at-a-time), duration + HNR floors + ASR
+  round-trip (`tests/asr_oracle.py`; build the oracle first with
+  `build_asr_oracle.py`). Exit code 1 on any breach; `--calibrate` reports
+  measured stats for setting floors.
