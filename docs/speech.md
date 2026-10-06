@@ -79,8 +79,15 @@ library under a fixed seed); `VLLM_OMNI_VOXCPM2_EAGER=1` serves the plain
 mlx-audio path. mlx-audio's generate is single-yield, so `stream: true`
 delivers interval-sized chunks of the **finished** buffer — first audio lands
 when synthesis completes; incremental per-patch decode is follow-up work
-(#88). Steady RTF on M4 4-bit ≈ 2 eager, improved by the compiled loop;
-further levers (timestep knee, DiT quantization) are tracked on #88.
+(#88).
+
+#88's serving defaults, each gated on quality: `inference_timesteps` 6 (the
+measured knee — paired-seed ASR round-trip equivalence vs the checkpoint's
+10) and load-time quantization of the blocks the checkpoint ships in bf16
+(**8-bit DiT + 4-bit encoder**; `VLLM_OMNI_VOXCPM2_QUANT` = `off`/`4bit`/`8bit`).
+Quiet-M4 steady RTF: 2.0 baseline (bf16, t=10, library eager) → **~0.6**
+(default) — 3.5×, with the HNR floors and the ASR round-trip battery passing
+(`tests/asr_oracle.py`, oracle built by `scripts/build_asr_oracle.py`).
 
 ## One-shot, no server
 

@@ -27,6 +27,7 @@ import base64
 import binascii
 import concurrent.futures
 import io
+import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -57,13 +58,17 @@ DEFAULT_STREAM_INTERVAL = 0.5
 
 @dataclass(frozen=True)
 class VoxCPM2Config:
-    """Serving defaults for VoxCPM2 — the checkpoint's own generate defaults
-    (inference_timesteps 10, cfg 2.0, max 2000 patches ≈ 40 s of audio at
-    ~20 ms per patch)."""
+    """Serving defaults for VoxCPM2. ``inference_timesteps`` defaults to 6,
+    the measured knee (#88: paired-seed ASR round-trip equivalence vs the
+    checkpoint's 10 — en/en2/zh median deltas within ±0.012, means flat —
+    while the solver runs 5 estimator passes per patch instead of 9, a
+    34% cut of the phase that is 85% of wall). cfg 2.0 and max 2000
+    patches ≈ 40 s of audio at ~20 ms per patch are the checkpoint's own
+    generate defaults."""
 
     model_ref: str = DEFAULT_MODEL
     instruct: str | None = None
-    inference_timesteps: int = 10
+    inference_timesteps: int = 6
     cfg_value: float = 2.0
     max_tokens: int = 2000
     warmup_patches: int = 0
@@ -89,7 +94,22 @@ def is_voxcpm2_model(model: Any) -> bool:
 
 
 def load_voxcpm2_model(config: VoxCPM2Config) -> Any:
-    """Load VoxCPM2 through mlx-audio. Requires the [tts] extra."""
+    """Load VoxCPM2 through mlx-audio. Requires the [tts] extra.
+
+    The two blocks the mlx-community conversion left in bf16 — the CFM DiT
+    estimator and the per-patch feature encoder (376M params, ~715 MiB
+    streamed 9×/1× per 20 ms patch) — are quantized at load by default
+    (#88's lever against the measured bandwidth floor): **8-bit DiT +
+    4-bit encoder**, the configuration that passed the paired-seed ASR
+    round-trip gate (en means 0.951→0.940, en2/zh up; pure 4-bit was
+    marginal on en — means 0.951→0.857 — and stays available but is not
+    the default). Quantizing in place keeps the artifact reproducible
+    without distributing a new repo. ``VLLM_OMNI_VOXCPM2_QUANT``
+    overrides: ``off`` (bf16 blocks), ``4bit`` (both 4-bit), ``8bit``
+    (the default mix). Human audition of the quantized output is still
+    pending — the numeric gates (HNR floors + the ASR round-trip battery)
+    pass.
+    """
     try:
         from mlx_audio.tts.utils import load_model
     except ImportError as exc:
@@ -98,6 +118,17 @@ def load_voxcpm2_model(config: VoxCPM2Config) -> Any:
         ) from exc
     model = load_model(config.model_ref)
     _unpin_cpu_buffers(model)
+    mode = os.environ.get("VLLM_OMNI_VOXCPM2_QUANT", "8bit").lower()
+    if mode not in ("off", ""):
+        import mlx.nn as nn
+
+        if mode == "4bit":
+            nn.quantize(model.feat_decoder.estimator, group_size=64, bits=4)
+            nn.quantize(model.feat_encoder, group_size=64, bits=4)
+        else:  # 8bit: the validated mix — 8-bit DiT, 4-bit encoder
+            nn.quantize(model.feat_decoder.estimator, group_size=64, bits=8)
+            nn.quantize(model.feat_encoder, group_size=64, bits=4)
+        mx.eval(model.parameters())
     # no compile_model() here: the default serving path is the vendored
     # compiled loop (tts/voxcpm2_loop.py), whose closures must wrap the RAW
     # modules — compile_model() replaces them with opaque compiled wrappers

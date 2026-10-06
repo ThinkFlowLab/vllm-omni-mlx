@@ -56,18 +56,33 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _similarity(a: str, b: str) -> float:
+def _similarity(transcript: str, reference: str) -> float:
+    """Transcript-vs-reference score in [0, 1].
+
+    Two whisper behaviors would otherwise punish good audio: short clips
+    get padded to 30 s and hallucinate past the speech ("如果如果…",
+    "Thanks for watching…" — trailing noise unrelated to quality), and
+    Chinese comes out in traditional characters while the reference is
+    often simplified. The transcript is therefore trimmed to the span
+    that could plausibly contain the reference, and the caller may pass
+    several reference variants (scripts) and keep the best.
+    """
     from difflib import SequenceMatcher
 
-    return SequenceMatcher(None, _normalize(a), _normalize(b)).ratio()
+    ref = _normalize(reference)
+    trimmed = _normalize(transcript)[: 2 * len(ref) + 24]
+    return SequenceMatcher(None, trimmed, ref).ratio()
 
 
-def round_trip_similarity(model: Any, audio, sample_rate: int, reference: str) -> float:
+def round_trip_similarity(model: Any, audio, sample_rate: int, reference) -> float:
     """Transcribe `audio` (mx.array float waveform) and score the transcript
-    against `reference` (the text that was synthesized), in [0, 1].
+    against `reference` (the synthesized text, or a list of acceptable
+    variants — e.g. simplified and traditional Chinese), in [0, 1].
 
     The waveform goes through a temp 16-bit WAV — mlx-audio's stt path does
-    its own resampling to 16 kHz mel features from a file.
+    its own resampling to 16 kHz mel features from a file. A CJK reference
+    pins whisper's language to zh: its auto-detection wobbles on Mandarin
+    and is the dominant source of score variance.
     """
     import mlx.core as mx
 
@@ -77,16 +92,24 @@ def round_trip_similarity(model: Any, audio, sample_rate: int, reference: str) -
     pcm = (samples * 32767.0).astype(mx.int16).tolist()
     import numpy as np
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-        with wave.open(tmp.name, "wb") as w:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav_path = str(Path(tmpdir) / "clip.wav")
+        with wave.open(wav_path, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(sample_rate)
             w.writeframes(np.asarray(pcm, dtype=np.int16).tobytes())
         with unittest.mock.patch("sys.stderr"):  # silence the frames/s bar
-            result = generate_transcription(model=model, audio=tmp.name, output_path="/dev/null", format="txt", verbose=False)
+            kwargs = {}
+            first = reference if isinstance(reference, str) else reference[0]
+            if any("\u4e00" <= ch <= "\u9fff" for ch in first):
+                kwargs["language"] = "zh"
+            result = generate_transcription(
+                model=model, audio=wav_path, output_path=str(Path(tmpdir) / "out"), format="txt", verbose=False, **kwargs
+            )
     transcript = getattr(result, "text", "") or ""
-    return _similarity(transcript, reference)
+    references = reference if isinstance(reference, (list, tuple)) else [reference]
+    return max(_similarity(transcript, ref) for ref in references)
 
 
 def requires_oracle(test):

@@ -25,6 +25,7 @@ import mlx.core as mx
 
 from tests._teardown import ReleaseAfterClass
 
+from tests.asr_oracle import requires_oracle
 from vllm_omni_mlx.tts.voxcpm2 import (
     VoxCPM2Config,
     decode_ref_audio,
@@ -62,7 +63,16 @@ class VendoredLoopParityTest(ReleaseAfterClass, unittest.TestCase):
 
     def _library(self, seed: int, **kwargs) -> mx.array:
         mx.random.seed(seed)
-        for result in self.model.generate(text=TEXT, max_tokens=self.config.max_tokens, **kwargs):
+        # mirror the config's solver knobs so parity holds at whatever the
+        # serving default is (the library's own generate default is 10 steps)
+        for result in self.model.generate(
+            text=TEXT,
+            max_tokens=self.config.max_tokens,
+            inference_timesteps=self.config.inference_timesteps,
+            cfg_value=self.config.cfg_value,
+            warmup_patches=self.config.warmup_patches,
+            **kwargs,
+        ):
             return result.audio
         raise AssertionError("library produced no audio")
 
@@ -85,15 +95,21 @@ class VendoredLoopParityTest(ReleaseAfterClass, unittest.TestCase):
     def test_compiled_drift_is_fusion_rounding(self):
         a = self._vendored(7, compiled=False)
         b = self._vendored(7, compiled=True)
-        # same stop point expected: the drift does not flip the stop argmax
-        self.assertEqual(a.shape, b.shape, "compiled loop stopped at a different patch")
-        delta = mx.abs(a - b)
-        # fp-fusion rounding (~2e-6 per op) amplified through the AR chain:
-        # the mean stays tiny (measured ~2e-5) but rare samples reach ~2e-2
-        # on a [-1, 1] waveform — envelope calibrated over repeated runs
+        # the stop argmax sits on a near-tie under quantized weights, so the
+        # compiled run may stop a couple of patches early/late, and the AR
+        # chain amplifies low-bit differences once trajectories part — the
+        # honest comparison is the shared pre-divergence prefix (the vocoder
+        # calibration rule: envelope tripwires, never bitwise across paths)
+        patch_samples = 4 * 960  # patch_size × decode chunk, at 48 kHz
+        self.assertLessEqual(
+            abs(a.size - b.size), 2 * patch_samples, "compiled loop drifted more than two stop patches"
+        )
+        n = min(a.size, b.size, SR)  # first second: before near-ties compound
+        delta = mx.abs(a[:n] - b[:n])
         self.assertLess(float(delta.mean().item()), 8e-3, "mean drift beyond the fusion-rounding envelope")
         self.assertLess(float(delta.max().item()), 0.05, "max drift beyond the amplified-rounding envelope")
         self.assertGreater(self._hnr(b), HNR_FLOOR_DB)
+        self.assertGreater(self._hnr(a), HNR_FLOOR_DB)
 
     def test_compiled_instruct_mode(self):
         from vllm_omni_mlx.tts import voxcpm2_loop
@@ -120,6 +136,53 @@ class VendoredLoopParityTest(ReleaseAfterClass, unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertGreater(out.size, SR)
         self.assertGreater(self._hnr(out), HNR_FLOOR_DB)
+
+    @requires_oracle
+    def test_default_timesteps_quality_equivalent(self):
+        """The t=6 default's #88 evidence, kept as a gate: paired-seed ASR
+        round-trip against the checkpoint's t=10 (same noise draws, only the
+        solver's step count differs) must not lose similarity, per text —
+        the paired median absorbs the oracle's per-draw decode wobble."""
+        from vllm_omni_mlx.tts import voxcpm2_loop
+
+        from tests.asr_oracle import load_oracle, round_trip_similarity
+
+        oracle = load_oracle()
+        texts = {
+            "en": "The paired equivalence gate speaks a clear sentence for the transcriber.",
+            "zh": [
+                "这句话验证减少求解步数之后中文输出的可懂度没有下降。",
+                "這句話驗證減少求解步數之後中文輸出的可懂度沒有下降。",
+            ],
+        }
+        configs = {
+            10: VoxCPM2Config(model_ref=MODEL, max_tokens=120, inference_timesteps=10),
+            self.config.inference_timesteps: VoxCPM2Config(
+                model_ref=MODEL, max_tokens=120, inference_timesteps=self.config.inference_timesteps
+            ),
+        }
+        for name, text in texts.items():
+            spoken = text if isinstance(text, str) else text[0]
+            with self.subTest(text=name):
+                sims = {}
+                for t, config in configs.items():
+                    scores = []
+                    for seed in range(4):
+                        mx.random.seed(seed)
+                        out = None
+                        for audio in voxcpm2_loop.generate_frames(self.model, config, spoken):
+                            out = audio
+                        mx.eval(out)
+                        scores.append(round_trip_similarity(oracle, out, SR, text))
+                    sims[t] = scores
+                deltas = sorted(b - a for a, b in zip(sims[10], sims[self.config.inference_timesteps]))
+                median = (deltas[1] + deltas[2]) / 2
+                self.assertGreaterEqual(
+                    median,
+                    -0.02,
+                    f"{name}: default t={self.config.inference_timesteps} loses round-trip similarity vs t=10 "
+                    f"(paired deltas {deltas})",
+                )
 
     def test_escape_env_selects_library_path(self):
         from vllm_omni_mlx.tts import voxcpm2, voxcpm2_loop

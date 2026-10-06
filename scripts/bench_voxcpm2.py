@@ -54,14 +54,30 @@ def main() -> int:
         default=None,
         help="generation path: compiled = vendored compiled loop (default), eager/library = library path, nothing compiled",
     )
+    parser.add_argument(
+        "--quant",
+        choices=("8bit", "4bit", "off"),
+        default=None,
+        help="DiT/encoder load-time quantization (VLLM_OMNI_VOXCPM2_QUANT; default 8bit = 8-bit DiT + 4-bit encoder)",
+    )
+    parser.add_argument(
+        "--timesteps",
+        type=int,
+        default=None,
+        help="inference_timesteps override (serving default 6; 10 = the checkpoint's own default)",
+    )
     args = parser.parse_args()
     if args.eager or args.mode in ("eager", "library"):
         os.environ["VLLM_OMNI_VOXCPM2_EAGER"] = "1"
+    if args.quant:
+        os.environ["VLLM_OMNI_VOXCPM2_QUANT"] = args.quant
 
     from vllm_omni_mlx.tts.voxcpm2 import VoxCPM2Config, VoxCPM2Service, load_voxcpm2_model, local_snapshot
 
-    print(f"loading voxcpm2 {args.model} ...", flush=True)
+    print(f"loading voxcpm2 {args.model} (quant={os.environ.get('VLLM_OMNI_VOXCPM2_QUANT', '8bit')}) ...", flush=True)
     config = VoxCPM2Config(model_ref=args.model)
+    if args.timesteps:
+        config = VoxCPM2Config(model_ref=args.model, inference_timesteps=args.timesteps)
     service = VoxCPM2Service(load_voxcpm2_model(config), config)
     sr = service.sample_rate
 
