@@ -14,6 +14,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .asr.service import RESPONSE_FORMATS as asr_render_formats
+from .asr.service import render as asr_render
 from .backends import Backend, Chunk
 from .schemas import ApiError, UnifiedRequest, normalize_anthropic, normalize_openai
 
@@ -221,7 +223,7 @@ def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: 
 # app factory
 # --------------------------------------------------------------------------
 
-def create_app(backend: Backend | None = None, api_key: str | None = None, tts_service=None) -> Starlette:
+def create_app(backend: Backend | None = None, api_key: str | None = None, tts_service=None, asr_service=None) -> Starlette:
     async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
@@ -234,6 +236,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
                 "owned_by": "vllm-omni-mlx",
             }
             for name in ([backend.name] if backend is not None else []) + ([tts_service.name] if tts_service is not None else [])
+            + ([asr_service.name] if asr_service is not None else [])
         ]
         return JSONResponse({"object": "list", "data": entries})
 
@@ -371,6 +374,50 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             return _openai_error(exc)
         return JSONResponse({"object": "list", "voices": tts_service.voices})
 
+    async def audio_transcriptions(request: Request) -> Response:
+        try:
+            _check_auth(request, api_key)
+            try:
+                form = await request.form()
+            except AssertionError:  # starlette: python-multipart not installed
+                raise ApiError(500, "multipart parsing needs python-multipart; pip install 'vllm-omni-mlx[asr]'", err_type="server_error")
+            except Exception:
+                raise ApiError(400, "request body must be multipart/form-data")
+            upload = form.get("file")
+            if upload is None or isinstance(upload, str):
+                raise ApiError(400, "file is required (multipart audio upload)")
+            fmt = form.get("response_format", "json")
+            if form.get("stream") not in (None, "", "false", "False", "0"):
+                raise ApiError(400, "streaming transcription is not supported yet; omit stream")
+            temperature = form.get("temperature")
+            try:
+                temperature = float(temperature) if temperature not in (None, "") else None
+            except ValueError:
+                raise ApiError(400, "temperature must be a number")
+            hotwords = form.get("hotwords")
+            hotword_list = [w.strip() for w in str(hotwords).replace("\n", ",").split(",") if w.strip()] if hotwords else None
+            if fmt not in asr_render_formats:
+                raise ApiError(400, f"response_format must be one of {', '.join(asr_render_formats)}, got '{fmt}'")
+            data = await upload.read()
+            result = await asyncio.to_thread(
+                asr_service.transcribe,
+                data,
+                form.get("language") or None,
+                form.get("prompt") or None,
+                hotword_list,
+                temperature,
+            )
+            payload, kind = asr_render(result, fmt)
+            if kind == "text":
+                return Response(payload, media_type="text/plain; charset=utf-8")
+            return JSONResponse(payload)
+        except ApiError as exc:
+            return _openai_error(exc)
+        except ValueError as exc:
+            return _openai_error(ApiError(400, str(exc), err_type="invalid_request_error"))
+        except Exception as exc:
+            return _openai_error(ApiError(500, f"transcription failed: {exc}", err_type="server_error"))
+
     routes = [
         Route("/health", health),
         Route("/v1/models", models),
@@ -385,4 +432,6 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             Route("/v1/audio/speech", audio_speech, methods=["POST"]),
             Route("/v1/audio/voices", audio_voices),
         ]
+    if asr_service is not None:
+        routes.append(Route("/v1/audio/transcriptions", audio_transcriptions, methods=["POST"]))
     return Starlette(routes=routes)

@@ -135,6 +135,7 @@ re-prefill, so correctness never depends on the cache).
 | `POST /v1/messages` | Anthropic (SSE streaming, image blocks) |
 | `POST /v1/audio/speech` | OpenAI audio (`wav` / chunked `pcm` with `stream: true`) |
 | `GET /v1/audio/voices` | preset speakers of the loaded TTS model |
+| `POST /v1/audio/transcriptions` | OpenAI audio (multipart `file`; `json` / `text` / `verbose_json`) — `--asr-model`, `[asr]` extra |
 | `GET /v1/models`, `GET /health` | model list, liveness |
 
 Bring up a speech server and talk to it:
@@ -145,6 +146,15 @@ vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --
 curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
     -d '{"input": "Hello from vllm omni mlx.", "voice": "vivian"}' \
     http://127.0.0.1:8000/v1/audio/speech -o speech.wav
+```
+
+Speech recognition rides the same server with `--asr-model` (decoder-style Qwen3-ASR; the
+OpenAI `prompt` field becomes the decoder's context prompt, `hotwords` is an extension):
+
+```sh
+pip install 'vllm-omni-mlx[asr]'
+vllm-omni-mlx serve --asr-model mlx-community/Qwen3-ASR-1.7B-4bit
+curl -F file=@speech.wav -F language=en http://127.0.0.1:8000/v1/audio/transcriptions
 ```
 
 Chat works the same way on the same server (`/v1/chat/completions`,
