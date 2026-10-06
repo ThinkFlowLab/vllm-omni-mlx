@@ -63,8 +63,11 @@ not this server's target categories.
 ## Getting Started
 
 Requires Python 3.10+ on an Apple Silicon Mac (MLX ships arm64-only wheels).
+No wheel is published to PyPI yet — install from source:
 
 ```sh
+git clone https://github.com/ThinkFlowLab/vllm-omni-mlx.git
+cd vllm-omni-mlx
 python -m venv .venv && source .venv/bin/activate
 pip install -e .            # server core (MLX engine stack)
 pip install -e '.[omni]'    # + vision/audio models (mlx-vlm)
@@ -130,10 +133,9 @@ re-prefill, so correctness never depends on the cache).
 | `GET /v1/audio/voices` | preset speakers of the loaded TTS model |
 | `GET /v1/models`, `GET /health` | model list, liveness |
 
-Bring up a speech server and talk to it:
+Bring up a speech server (installed per [Getting Started](#getting-started)) and talk to it:
 
 ```sh
-pip install 'vllm-omni-mlx[tts]'
 vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni --api-key demo
 curl -H 'Authorization: Bearer demo' -H 'Content-Type: application/json' \
     -d '{"input": "Hello from vllm omni mlx.", "voice": "vivian"}' \
