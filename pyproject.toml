@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68"]
+# setuptools>=77 for PEP 639 SPDX license expressions
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,12 +8,31 @@ name = "vllm-omni-mlx"
 version = "0.1.0"
 description = "Lightweight OpenAI- and Anthropic-compatible omni-modality inference server for Apple Silicon (MLX)."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "mlx-lm>=0.28",
     "starlette>=0.37",
     "uvicorn>=0.30",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ThinkFlowLab/vllm-omni-mlx"
+Repository = "https://github.com/ThinkFlowLab/vllm-omni-mlx"
+Issues = "https://github.com/ThinkFlowLab/vllm-omni-mlx/issues"
+Changelog = "https://github.com/ThinkFlowLab/vllm-omni-mlx/releases"
 
 [project.optional-dependencies]
 omni = ["mlx-vlm>=0.7"]
