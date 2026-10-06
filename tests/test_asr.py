@@ -115,6 +115,10 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(result.duration, 1.0)
         self.assertEqual(result.generation_tokens, 3)
 
+    def test_detected_language_list_is_flattened(self):
+        self.model.generate = lambda audio, **kw: SimpleNamespace(text="x", language=["English"], segments=None)
+        self.assertEqual(self.service.transcribe(b"x").language, "English")
+
     def test_prompt_rides_system_prompt_and_hotwords_pass_through(self):
         self.service.transcribe(b"x", prompt=" meeting about MLX ", hotwords=["Qwen", "mlx"])
         _, kwargs = self.model.calls[0]

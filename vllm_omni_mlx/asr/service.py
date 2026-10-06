@@ -97,9 +97,12 @@ class ASRService:
             kwargs["hotwords"] = hotwords
         with self._lock:
             out = self._model.generate(waveform, **kwargs)
+        detected = getattr(out, "language", None)
+        if isinstance(detected, (list, tuple)):  # mlx-audio reports a list for single input
+            detected = detected[0] if detected else None
         return Transcription(
             text=(out.text or "").strip(),
-            language=getattr(out, "language", None),
+            language=detected,
             duration=duration,
             segments=list(getattr(out, "segments", None) or []),
             prompt_tokens=int(getattr(out, "prompt_tokens", 0) or 0),
