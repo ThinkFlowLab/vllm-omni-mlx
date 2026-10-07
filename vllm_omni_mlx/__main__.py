@@ -27,6 +27,11 @@ def build_serve_parser() -> argparse.ArgumentParser:
         default=None,
         help="also serve speech synthesis on /v1/audio/* (Qwen3-TTS via the [tts] extra); the only model when <model> is omitted",
     )
+    parser.add_argument(
+        "--asr-model",
+        default=None,
+        help="also serve speech recognition on /v1/audio/transcriptions (Qwen3-ASR via the [asr] extra); combine with --tts-model for a one-process voice agent",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="bind port (default: 8000)")
     parser.add_argument(
@@ -108,8 +113,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args) -> int:
-    if not args.model and not args.tts_model:
-        build_serve_parser().error("a model is required (or --tts-model to serve speech alone)")
+    if not args.model and not args.tts_model and not args.asr_model:
+        build_serve_parser().error("a model is required (or --tts-model / --asr-model to serve audio alone)")
     if args.omni and not args.model:
         build_serve_parser().error("--omni applies to the served model")
     if args.omni and args.tts_model:
@@ -121,6 +126,7 @@ def _serve(args) -> int:
 
     backend = None
     tts_service = None
+    asr_service = None
     if args.model:
         from .backends import _peek_config, load_backend
 
@@ -152,10 +158,40 @@ def _serve(args) -> int:
             print(f"error: failed to load TTS model '{args.tts_model}': {exc}", file=sys.stderr)
             return 1
 
-    names = [n for n in (getattr(backend, "name", None), getattr(tts_service, "name", None)) if n]
+    if args.asr_model:
+        try:
+            asr_service = _load_asr(args.asr_model)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"error: failed to load ASR model '{args.asr_model}': {exc}", file=sys.stderr)
+            return 1
+
+    names = [n for n in (getattr(backend, "name", None), getattr(tts_service, "name", None), getattr(asr_service, "name", None)) if n]
     print(f"serving {', '.join(names)} on http://{args.host}:{args.port}", file=sys.stderr)
-    uvicorn.run(create_app(backend, api_key=args.api_key, tts_service=tts_service), host=args.host, port=args.port, log_level=args.log_level)
+    uvicorn.run(create_app(backend, api_key=args.api_key, tts_service=tts_service, asr_service=asr_service), host=args.host, port=args.port, log_level=args.log_level)
     return 0
+
+
+def _load_asr(model_ref: str):
+    """Load an ASR checkpoint for serving (#68). The capability matrix is
+    consulted on config.json *before* any weights load, so an unsupported
+    family fails at boot with guidance instead of a per-request error."""
+    import time
+
+    from .asr.capabilities import family_of, require_served
+    from .asr.config import ASRConfig, load_asr_model
+    from .asr.service import ASRService
+    from .backends import _peek_config
+
+    try:
+        import multipart  # noqa: F401  (starlette's form parsing)
+    except ImportError as exc:
+        raise RuntimeError("ASR uploads need python-multipart; pip install 'vllm-omni-mlx[asr]'") from exc
+    require_served(family_of(_peek_config(model_ref)))
+    started = time.perf_counter()
+    config = ASRConfig(model_ref=model_ref)
+    service = ASRService(load_asr_model(config), config)
+    print(f"asr loaded in {time.perf_counter() - started:.1f}s ({service.model_type})", file=sys.stderr)
+    return service
 
 
 def _load_tts(model_ref: str):

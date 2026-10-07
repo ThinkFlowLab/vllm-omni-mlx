@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import mlx.core as mx
 
 from tests.audio_metrics import int16_pcm_hnr_db, wav_hnr_db
-from tests.test_stream_loop import _pcm16, _taped
+from tests.tts.test_stream_loop import _pcm16, _taped
 from vllm_omni_mlx.tts.config import TTSConfig, load_tts_model, local_snapshot
 from vllm_omni_mlx.tts.generate import synthesize, synthesize_design, wav_bytes
 from vllm_omni_mlx.tts.service import TTSService

@@ -34,8 +34,8 @@ process rather than one big `unittest discover` when checkpoints are cached
 (checkpoints stack inside a single process):
 
 ```sh
-for f in tests/test_*.py; do python -m unittest "${f%.py}".replace('/', '.') ; done   # illustrative
-python -m unittest tests.test_stream_loop            # one file at a time in practice
+for f in $(find tests -name 'test_*.py' | sort); do python -m unittest "${f%.py}".replace('/', '.') ; done   # illustrative
+python -m unittest tests.tts.test_stream_loop       # one file at a time in practice
 ```
 
 ## Performance changes
@@ -65,6 +65,16 @@ python -m unittest tests.test_stream_loop            # one file at a time in pra
   reimplementing model math; the pin is `mlx-audio>=0.5.7,<0.6` — bumping
   past it means re-verifying every vendored function against the new
   source (an adaptation PR, not a version bump).
+
+## Before you open the PR: the precheck (must)
+
+Run the repo's author-side self-check before declaring a PR ready —
+[`.claude/skills/precheck-pr/SKILL.md`](.claude/skills/precheck-pr/SKILL.md).
+It encodes the rules above as a checklist (machine gates, test taxonomy,
+A/B + probe-gated numbers, audio-quality gates, re-run after every fix) and
+exists because real findings show up in test-only diffs — #102's pass found
+five, one introduced by the pass itself. The reviewer-side counterpart is
+[`.claude/skills/review-pr/SKILL.md`](.claude/skills/review-pr/SKILL.md).
 
 ## Repository layout
 
