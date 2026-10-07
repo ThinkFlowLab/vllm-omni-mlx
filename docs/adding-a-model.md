@@ -162,3 +162,30 @@ Apple-Silicon budget, not the ceiling.
 - [ ] Numbers in the PR: TTFA p50/p95, RTF distribution, peak memory —
       solo *and* with a chat model resident
 - [ ] HNR gate calibrated per voice, human audition done
+
+## Image models (`diffusion/`, #91)
+
+The seam is adapter-shaped, not loop-shaped — no streaming, one blocking
+call per request:
+
+1. **Family registry** (`diffusion/config.py`): add a `Family` (aliases,
+   canonical repo, default steps, `supports_guidance`) and route refs in
+   `resolve_model()` → `ResolvedModel(family, weights_ref, quantize)`.
+   Weight routing matters: pre-quantized mirror repos honor their stored
+   level (`quantize=None`); canonical fp16 repos quantize on load
+   (`quantize=4`). Keep `config.py` importable without the `[image]`
+   extra (CI installs none).
+2. **Service** (`diffusion/mflux_service.py`): `MFluxService` maps the
+   request onto the mflux backend call, validates family capabilities
+   (guidance on a guidance-distilled model → `ValueError`, the route
+   maps it to a 400), runs load+generate on one dedicated worker thread
+   (MLX stream affinity — serve smoke is mandatory, see #71), and
+   returns `ImageResult` (PNG bytes + seed + timings + peak
+   memory) — the metrics the doctrine reports.
+3. **Tests** (`tests/diffusion/`, mirroring src): CI-safe resolution +
+   endpoint tests with a fake service; one weight-gated file per model
+   (per-file subprocess, offline, donor release in `tearDownClass`).
+   Gates: valid PNG above a size floor, dimensions/steps honored,
+   **same seed → byte-identical PNG** (characterize, don't assume, if
+   fusion flips appear), family-capability 400s.
+4. **Docs**: README models-table row + the `[image]` footprint row.

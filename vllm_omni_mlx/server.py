@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -15,7 +16,13 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .backends import Backend, Chunk
-from .schemas import ApiError, UnifiedRequest, normalize_anthropic, normalize_openai
+from .schemas import (
+    ApiError,
+    UnifiedRequest,
+    normalize_anthropic,
+    normalize_openai,
+    parse_image_generation,
+)
 
 _STARTED_AT = int(time.time())
 
@@ -221,7 +228,7 @@ def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: 
 # app factory
 # --------------------------------------------------------------------------
 
-def create_app(backend: Backend | None = None, api_key: str | None = None, tts_service=None) -> Starlette:
+def create_app(backend: Backend | None = None, api_key: str | None = None, tts_service=None, image_service=None) -> Starlette:
     async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
@@ -233,7 +240,11 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
                 "created": _STARTED_AT,
                 "owned_by": "vllm-omni-mlx",
             }
-            for name in ([backend.name] if backend is not None else []) + ([tts_service.name] if tts_service is not None else [])
+            for name in (
+                ([backend.name] if backend is not None else [])
+                + ([tts_service.name] if tts_service is not None else [])
+                + ([image_service.name] if image_service is not None else [])
+            )
         ]
         return JSONResponse({"object": "list", "data": entries})
 
@@ -371,6 +382,40 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             return _openai_error(exc)
         return JSONResponse({"object": "list", "voices": tts_service.voices})
 
+    async def images_generations(request: Request) -> Response:
+        try:
+            _check_auth(request, api_key)
+            req = parse_image_generation(await _json_body(request))
+            # blocking, seconds-to-tens-of-seconds: off the event loop, one
+            # request at a time inside the service (per-service lock)
+            results = await asyncio.to_thread(
+                image_service.generate,
+                req.prompt,
+                n=req.n,
+                width=req.width,
+                height=req.height,
+                steps=req.steps,
+                guidance=req.guidance,
+                seed=req.seed,
+            )
+            return JSONResponse(
+                {
+                    "created": int(time.time()),
+                    "model": image_service.name,
+                    "data": [{"b64_json": base64.b64encode(r.png).decode("ascii")} for r in results],
+                    # vllm-omni-mlx extensions: reproducibility + the image
+                    # doctrine's metrics (per image)
+                    "seeds": [r.seed for r in results],
+                    "generation_time_ms": [round(r.generation_time * 1000) for r in results],
+                }
+            )
+        except ApiError as exc:
+            return _openai_error(exc)
+        except ValueError as exc:
+            return _openai_error(ApiError(400, str(exc), err_type="invalid_request_error"))
+        except Exception as exc:
+            return _openai_error(ApiError(500, f"image generation failed: {exc}", err_type="server_error"))
+
     routes = [
         Route("/health", health),
         Route("/v1/models", models),
@@ -384,5 +429,9 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
         routes += [
             Route("/v1/audio/speech", audio_speech, methods=["POST"]),
             Route("/v1/audio/voices", audio_voices),
+        ]
+    if image_service is not None:
+        routes += [
+            Route("/v1/images/generations", images_generations, methods=["POST"]),
         ]
     return Starlette(routes=routes)

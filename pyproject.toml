@@ -37,10 +37,13 @@ Changelog = "https://github.com/ThinkFlowLab/vllm-omni-mlx/releases"
 [project.optional-dependencies]
 omni = ["mlx-vlm>=0.7"]
 tts = ["mlx-audio>=0.5.7,<0.6"]
+# minor-capped like mlx-audio: the mflux seam touches mflux.models.* internals
+# (loader classes), so a minor bump is an adaptation PR, not a free upgrade
+image = ["mflux>=0.21.0,<0.22"]
 
 [project.scripts]
 # serve/tts subcommands, upstream vllm-omni's `vllm serve <model> --omni` shape
 vllm-omni-mlx = "vllm_omni_mlx.__main__:main"
 
 [tool.setuptools]
-packages = ["vllm_omni_mlx", "vllm_omni_mlx.tts"]
+packages = ["vllm_omni_mlx", "vllm_omni_mlx.tts", "vllm_omni_mlx.diffusion"]

@@ -291,3 +291,56 @@ def _opt_int(value, name: str) -> Optional[int]:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ApiError(400, f"'{name}' must be an integer")
     return value
+
+
+# --------------------------------------------------------------------------
+# /v1/images/generations (#91): OpenAI-compatible request, plus the
+# diffusion params the category needs (steps/guidance/seed). Family
+# capability checks (e.g. guidance on guidance-distilled models) live in
+# the service, not here.
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class ImageGenerationRequest:
+    prompt: str
+    n: int = 1
+    width: int = 1024
+    height: int = 1024
+    steps: Optional[int] = None
+    guidance: Optional[float] = None
+    seed: Optional[int] = None
+
+
+def parse_image_generation(payload: dict) -> ImageGenerationRequest:
+    prompt = payload.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ApiError(400, "prompt must be a non-empty string")
+
+    n = payload.get("n", 1)
+    if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 4:
+        raise ApiError(400, "'n' must be an integer between 1 and 4")
+
+    width, height = 1024, 1024
+    if payload.get("size") is not None:
+        size = payload["size"]
+        if not isinstance(size, str) or "x" not in size.lower():
+            raise ApiError(400, "'size' must be a '<width>x<height>' string, e.g. '1024x1024'")
+        parts = size.lower().split("x", 1)
+        if not (parts[0].isdigit() and parts[1].isdigit()):
+            raise ApiError(400, f"'size' must be a '<width>x<height>' string, got '{size}'")
+        width, height = int(parts[0]), int(parts[1])
+    if not (256 <= width <= 2048 and 256 <= height <= 2048):
+        raise ApiError(400, f"image dimensions must be within 256–2048, got {width}x{height}")
+    if width % 16 or height % 16:
+        raise ApiError(400, f"image dimensions must be multiples of 16 (latent grid), got {width}x{height}")
+
+    return ImageGenerationRequest(
+        prompt=prompt,
+        n=n,
+        width=width,
+        height=height,
+        steps=_opt_int(payload.get("steps"), "steps"),
+        guidance=_opt_float(payload.get("guidance"), "guidance"),
+        seed=_opt_int(payload.get("seed"), "seed"),
+    )
