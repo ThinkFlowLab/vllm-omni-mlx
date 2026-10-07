@@ -75,6 +75,18 @@ Operational and development scripts.
   ```sh
   python scripts/profile_compiled_loop.py --max-tokens 400
   ```
+
+- `asr_roundtrip.py` (#68): TTS → ASR round-trip gate. Synthesizes fixed
+  sentences with the serving TTS checkpoint, transcribes them with the serving
+  ASR checkpoint, and fails if mean word-error-rate exceeds `--max-wer`
+  (default 0.15). No external fixtures; catches catastrophic breakage on
+  either side, not fine WER differences. Both models stay resident (~5.4 GiB
+  peak on the 4-bit defaults), so run it on its own:
+
+  ```sh
+  python scripts/asr_roundtrip.py --voices vivian ryan
+  ```
+
 - `acc_all_checkpoints.py` — the unified accuracy battery: every served TTS
   checkpoint × its served paths through the real request surface, one
   subprocess per model (one-heavy-at-a-time), duration + HNR floors + ASR

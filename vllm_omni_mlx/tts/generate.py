@@ -25,6 +25,7 @@ from typing import Any, Iterator
 
 import mlx.core as mx
 
+from ..audio_io import decode_audio
 from .config import TTSConfig
 from .variants import ensure_served
 
@@ -110,15 +111,7 @@ def decode_ref_audio(data: str | bytes) -> mx.array:
             data = base64.b64decode(data, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ValueError(f"ref_audio must be base64-encoded audio: {exc}") from None
-    try:
-        from mlx_audio.audio_io import read as audio_read
-
-        samples, _ = audio_read(io.BytesIO(data), dtype="float32", sample_rate=24000, nchannels=1)
-    except Exception as exc:
-        raise ValueError(f"ref_audio could not be decoded as audio: {exc}") from None
-    if samples.size == 0:
-        raise ValueError("ref_audio decoded to zero samples")
-    return mx.array(samples, dtype=mx.float32)
+    return decode_audio(data, 24000, "ref_audio")
 
 
 def synthesize_clone(
