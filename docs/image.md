@@ -134,6 +134,18 @@ tracked as follow-up together with an upstream mflux quantize-predicate fix.
 `--quantize` remains exposed for experimentation; don't serve dense repos on a
 16 GB Mac.
 
+**fp4 follow-up (measured).** The faint crosshatch in flat gradients traces to
+the DiT's int4 affine quantization (not the VAE: an int4-DiT + bf16-VAE run
+keeps the artifact; int8 DiT removes it). MLX 0.32's floating-point 4-bit modes
+fix exactly this at the same size class, measured on the flat-sky probe
+(512², 8 steps, TE/VAE bf16): **nvfp4 ≈ int4 speed** (8.0 vs 7.6 s/step,
+thermally interleaved) with the periodic streaks reduced to near-int8 levels;
+**mxfp4 is ~2× slower** (Metal kernel path); int8 is 2.3× slower. Blocker:
+mflux 0.21 hardcodes affine (`nn.quantize(..., bits)`, no `mode`) — the
+experiment ran through a monkeypatch. Upstream ask: `mode`/group-size
+pass-through + ModelSaver persistence, then a `*-mflux-nvfp4` community repo
+becomes the quality-equivalent serving checkpoint at identical speed/memory.
+
 ## Design notes
 
 - **Solo-only residency.** Weights are ~8.9 GiB resident and generation peaks
