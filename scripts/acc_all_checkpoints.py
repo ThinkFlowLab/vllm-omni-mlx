@@ -82,7 +82,7 @@ MODELS: dict[str, dict] = {
         "kind": "voxcpm2",
         "paths": [
             {"name": "zero-en", "text": "The unified accuracy battery speaks this sentence so the harmonics and the transcriber can both check it.", "voice": "default", "hnr_floor_db": -5.0, "rt_floor": 0.50},
-            {"name": "zero-zh", "text": "这句话验证统一准确率测试覆盖中文语音合成。", "asr_ref": ["这句话验证统一准确率测试覆盖中文语音合成。", "這句話驗證統一準確率測試覆蓋中文語音合成。"], "voice": "default", "hnr_floor_db": -5.0, "rt_floor": 0.45},
+            {"name": "zero-zh", "text": "这句话验证统一准确率测试覆盖中文语音合成。", "asr_ref": ["这句话验证统一准确率测试覆盖中文语音合成。", "這句話驗證統一準確率測試覆蓋中文語音合成。"], "voice": "default", "hnr_floor_db": -5.0, "rt_floor": None, "rt_note": "whisper-base Mandarin decode wobbles 0.29-0.98 at fixed config — report-only until a stronger zh oracle"},
         ],
     },
 }
@@ -92,12 +92,17 @@ REF_TEXT = "The unified accuracy battery speaks this sentence so the harmonics a
 SEEDS = (11, 12, 13)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default=None, help="run one checkpoint (substring of its key, e.g. voxcpm2)")
-    parser.add_argument("--calibrate", action="store_true", help="report measured stats + suggested floors; don't fail on None-floor paths")
+    parser.add_argument("--calibrate", action="store_true", help="report measured stats + a suggested floor line per path (None-floor paths never fail regardless)")
     parser.add_argument("--draws", type=int, default=len(SEEDS))
-    args = parser.parse_args()
+    parser.add_argument("--_worker", default=None, help=argparse.SUPPRESS)  # internal: per-checkpoint subprocess
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     selected = {k: v for k, v in MODELS.items() if args.model is None or args.model in k}
     if not selected:
@@ -105,6 +110,7 @@ def main() -> int:
         return 2
 
     failures = 0
+    rows: list[dict] = []
     print(f"{'checkpoint':26s} {'path':16s} {'draw':>4s}  {'dur':>5s}  {'HNR dB':>7s}  {'RT sim':>6s}  verdict")
     for key, spec in selected.items():
         # the clone path needs the ref clip from the CustomVoice run first
@@ -122,6 +128,7 @@ def main() -> int:
             if not line.startswith("{"):
                 continue
             row = json.loads(line)
+            rows.append(row)
             hnr = row["hnr_db"]
             rt = row["rt_sim"]
             floor = row["hnr_floor"]
@@ -135,20 +142,33 @@ def main() -> int:
             verdict = "ok" if ok else "FAIL"
             if floor is None or rt_floor is None:
                 verdict += " (report-only)" if ok else ""
-            print(f"{key:26s} {row['path']:16s} {row['seed']:>4d}  {row['seconds']:5.1f}  {hnr:7.2f}  {rt if rt is not None else float('nan'):6.3f}  {verdict}"
+            rt_cell = f"{rt:.3f}" if rt is not None else "-"
+            print(f"{key:26s} {row['path']:16s} {row['seed']:>4d}  {row['seconds']:5.1f}  {hnr:7.2f}  {rt_cell:>6s}  {verdict}"
                   f"{'' if hnr_ok else f' [HNR<= {floor}]'}{'' if rt_ok else f' [RT<= {rt_floor}]'}")
         if proc.returncode != 0:
             failures += 1
             print(f"{key}: worker failed (rc={proc.returncode}): {proc.stderr.strip()[-400:]}")
 
     if args.calibrate:
-        print("\ncalibration: set hnr_floor_db/rt_floor in MODELS from the minima above minus a margin")
+        print("\ncalibration — suggested floors (min measured, rounded down; add your own margin):")
+        by_path: dict[tuple, list] = {}
+        for row in rows:
+            by_path.setdefault((row["model"], row["path"]), []).append(row)
+        for (model, path), draws_ in by_path.items():
+            hnr_min = min(d["hnr_db"] for d in draws_)
+            rts = [d["rt_sim"] for d in draws_ if d["rt_sim"] is not None]
+            rt_part = f", rt_floor {min(rts):.2f}" if rts else ", rt_floor <calibrate: oracle absent>"
+            print(f'  {model} / {path}: hnr_floor_db {hnr_min:.1f}{rt_part}')
     print(f"\n{'PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return 0 if failures == 0 else 1
 
 
 def worker(key: str, draws: int) -> int:
     """One checkpoint, one process: load, draw each path, emit JSON lines."""
+    import os
+
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")  # weight-gated loads: local cache only
+
     import mlx.core as mx
     import numpy as np
 
@@ -200,8 +220,5 @@ def worker(key: str, draws: int) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--_worker")
-    parser.add_argument("--draws", type=int, default=len(SEEDS))
-    args, _ = parser.parse_known_args()
+    args = build_parser().parse_args()
     raise SystemExit(worker(args._worker, args.draws) if args._worker else main())
