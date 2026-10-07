@@ -112,6 +112,28 @@ Weights resident at load: 8.93 GiB (4-bit), 12.2 GiB with the baked r128 LoRA
 measured: the 1024² fast lane already peaks at 24.6 GiB MLX-active on this 24 GB
 machine — the base path at ≥1024² and any path at 1328² want more than 24 GB.
 
+## Quantization (measured)
+
+The served default is already the aggressive end: the pre-quantized
+`mlx-community/Qwen-Image-2.1-mflux-q4` repo carries 4-bit DiT + 4-bit text
+encoder + 4-bit VAE (8.93 GiB resident, 485 quantized tensors). Measured
+alternatives (512², 8 steps, same seed):
+
+| Path | Resident | Per-step | Peak @512² | Quality |
+| --- | --- | --- | --- | --- |
+| pre-quantized mflux-q4 (served) | 8.93 GiB | ~5.5 s | 13.6 GiB | faint crosshatch in flat gradients (4-bit VAE) |
+| dense + `--quantize 8` | 22.4 GiB | ~18 s | 24.6 GiB | visibly cleaner — but not servable |
+| dense + `--quantize 4` | 19.1 GiB | ~8 s | 23.6 GiB | same as q4 quality, worse numbers |
+
+Why the dense paths lose: mflux's on-the-fly quantize covers **only the
+transformer** — the 8B text encoder stays bf16 (14.1 GiB dense) and the VAE
+stays bf16 (1.2 GiB), so `--quantize` on `Qwen/Qwen-Image-2.1` cannot fit the
+solo budget and pays 2–3× per-step cost. The 8-bit quality win is real but the
+actionable lever is a **hybrid repo (4-bit DiT+TE + bf16 VAE, +0.9 GiB)** —
+tracked as follow-up together with an upstream mflux quantize-predicate fix.
+`--quantize` remains exposed for experimentation; don't serve dense repos on a
+16 GB Mac.
+
 ## Design notes
 
 - **Solo-only residency.** Weights are ~8.9 GiB resident and generation peaks
