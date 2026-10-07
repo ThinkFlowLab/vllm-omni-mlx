@@ -34,8 +34,8 @@ process rather than one big `unittest discover` when checkpoints are cached
 (checkpoints stack inside a single process):
 
 ```sh
-for f in tests/test_*.py; do python -m unittest "${f%.py}".replace('/', '.') ; done   # illustrative
-python -m unittest tests.test_stream_loop            # one file at a time in practice
+for f in $(find tests -name 'test_*.py' | sort); do python -m unittest "${f%.py}".replace('/', '.') ; done   # illustrative
+python -m unittest tests.tts.test_stream_loop       # one file at a time in practice
 ```
 
 ## Performance changes
