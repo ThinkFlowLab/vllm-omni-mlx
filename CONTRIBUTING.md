@@ -73,9 +73,10 @@ python -m unittest tests.test_stream_loop            # one file at a time in pra
 | `schemas.py` | OpenAI/Anthropic → one internal request |
 | `backends.py` | mlx-lm text backend, mlx-vlm omni backend, stop filtering, cross-turn prompt cache |
 | `server.py` | routes, SSE + chunked streaming |
-| `__main__.py` | CLI (`serve`, `tts`) |
+| `__main__.py` | CLI (`serve`, `tts`, `image`) |
 | `tts/` | Qwen3-TTS pipeline: `config`/`variants` (checkpoint typing), `service` (validation + lock), `generate` (buffered) + `stream_loop` (streaming fast path), `prompt_embeds` + `prefix_cache` (per-voice prompt state), `compiled_steps` (mx.compile'd decode closures), `code2wav`/`talker`/`code_predictor` seams |
-| `docs/` | [architecture](docs/architecture.md) · [speech guide](docs/speech.md) · [profiling](docs/profiling.md) |
+| `diffusion/` | Image generation seam over mflux (#91): `config` (model registry + loader, license surfaced) and `service` (validation + lock, PNG bytes out) — served on `/v1/images/generations` |
+| `docs/` | [architecture](docs/architecture.md) · [speech guide](docs/speech.md) · [image guide](docs/image.md) · [profiling](docs/profiling.md) |
 
 Architecture rationale (why no scheduler, why prefix caching has none of
 upstream's paged-KV conflicts): [docs/architecture.md](docs/architecture.md).

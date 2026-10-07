@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -221,7 +222,7 @@ def _anthropic_sse(req: UnifiedRequest, generator: Iterator[Chunk], model_name: 
 # app factory
 # --------------------------------------------------------------------------
 
-def create_app(backend: Backend | None = None, api_key: str | None = None, tts_service=None) -> Starlette:
+def create_app(backend: Backend | None = None, api_key: str | None = None, tts_service=None, image_service=None) -> Starlette:
     async def health(request: Request) -> Response:
         return JSONResponse({"status": "ok"})
 
@@ -233,7 +234,9 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
                 "created": _STARTED_AT,
                 "owned_by": "vllm-omni-mlx",
             }
-            for name in ([backend.name] if backend is not None else []) + ([tts_service.name] if tts_service is not None else [])
+            for name in ([backend.name] if backend is not None else [])
+            + ([tts_service.name] if tts_service is not None else [])
+            + ([image_service.name] if image_service is not None else [])
         ]
         return JSONResponse({"object": "list", "data": entries})
 
@@ -371,6 +374,36 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             return _openai_error(exc)
         return JSONResponse({"object": "list", "voices": tts_service.voices})
 
+    async def images_generations(request: Request) -> Response:
+        try:
+            _check_auth(request, api_key)
+            payload = await _json_body(request)
+            prompt = payload.get("prompt")
+            if payload.get("response_format", "b64_json") not in (None, "b64_json"):
+                raise ApiError(400, "response_format must be 'b64_json' (this server does not host image URLs)")
+            results = await asyncio.to_thread(
+                image_service.generate,
+                prompt,
+                size=payload.get("size"),
+                steps=payload.get("steps"),
+                guidance=payload.get("guidance"),
+                seed=payload.get("seed"),
+                negative_prompt=payload.get("negative_prompt", "__unset__"),
+                n=payload.get("n", 1),
+            )
+            return JSONResponse(
+                {
+                    "created": int(time.time()),
+                    "data": [{"b64_json": base64.b64encode(r.png).decode("ascii")} for r in results],
+                }
+            )
+        except ApiError as exc:
+            return _openai_error(exc)
+        except ValueError as exc:
+            return _openai_error(ApiError(400, str(exc), err_type="invalid_request_error"))
+        except Exception as exc:
+            return _openai_error(ApiError(500, f"image generation failed: {exc}", err_type="server_error"))
+
     routes = [
         Route("/health", health),
         Route("/v1/models", models),
@@ -384,5 +417,9 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
         routes += [
             Route("/v1/audio/speech", audio_speech, methods=["POST"]),
             Route("/v1/audio/voices", audio_voices),
+        ]
+    if image_service is not None:
+        routes += [
+            Route("/v1/images/generations", images_generations, methods=["POST"]),
         ]
     return Starlette(routes=routes)

@@ -16,6 +16,7 @@ flowchart TD
         TB["TextBackend — mlx-lm<br/>chat template · sampler · stream_generate<br/>single-entry cross-turn prefix cache"]
         OB["OmniBackend — mlx-vlm (optional extra)<br/>image · audio input"]
         TS["TTSService — tts/ (mlx-audio)<br/>Qwen3-TTS: presets · instruct · ICL cloning · voice design<br/>voice-prefix cache + compiled decode + first-chunk fast path"]
+        IS["ImageService — diffusion/ (mflux, optional extra)<br/>Qwen-Image-2.1: txt2img · b64_json out<br/>size/steps/guidance/seed validation"]
         LOCK("generation lock<br/>batch-1 · serialized")
     end
 
@@ -24,11 +25,13 @@ flowchart TD
 
     GATE --> NORM --> SEL
     GATE --> TS
+    GATE --> IS
     SEL -->|"text LLM"| TB
     SEL -->|"vision / audio model"| OB
     TB --> LOCK
     OB --> LOCK
     TS --> LOCK
+    IS --> LOCK
     LOCK --> MLX --> GPU
 
     ASR["planned · issue #68: /v1/audio/transcriptions<br/>decoder-style ASR, born-compiled"]
@@ -44,6 +47,8 @@ flowchart TD
 | Backends | `backends.py` | `TextBackend` (mlx-lm) and `OmniBackend` (mlx-vlm); auto-selection by model config; stop-sequence filtering; generation serialized under a lock |
 | TTS serving | `tts/service.py` | Request validation (voice strings vs cloning objects vs design instructions → 400s with guidance), output formats (wav / raw pcm), the generation lock |
 | TTS pipeline | `tts/` | `config`/`variants` (checkpoint typing + path×type dispatch), `generate` (buffered) and `stream_loop` (streaming fast path), `prompt_embeds` + `prefix_cache` (per-voice prompt pieces + static-prefix KV reuse), `compiled_steps` (mx.compile'd talker/predictor/sampler closures), `code2wav`/`talker`/`code_predictor` seams |
+| Image serving | `diffusion/service.py` | The seam over mflux (#91): size/steps/guidance/seed validation (400s with guidance, multiples-of-16 enforced instead of silent rounding), the generation lock, prompt → PNG bytes on `/v1/images/generations` |
+| Image pipeline | `diffusion/config.py` | Family registry + mflux loader (`[image]` extra, pinned), license surfaced per family, LoRA/scheduler pass-through for the fast lane |
 | Runtime | MLX | Model execution on the Metal GPU over unified memory |
 
 ## Why it looks like this
@@ -69,4 +74,5 @@ flowchart TD
 - **No native model code.** `tts/` is a seam layer: the loops vendor control
   flow over mlx-audio's components (MIT), and the compiled closures mirror their
   module bodies — model math stays in the library, which tracks upstream
-  Qwen3-TTS fixes for free.
+  Qwen3-TTS fixes for free. `diffusion/` goes further: it holds no vendored
+  model flow at all, only config + validation + serving over mflux.
