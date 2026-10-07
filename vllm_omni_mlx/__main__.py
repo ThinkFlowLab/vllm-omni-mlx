@@ -150,7 +150,6 @@ def _looks_like_image(model_ref: str) -> bool:
     layout rather than a root config.json: the official Qwen-Image-2.1 repo
     has model_index.json, mflux-format conversions keep the transformer/
     subdir with an index (the q4 repo has no config.json at all)."""
-    import json
     import os
 
     markers = ("model_index.json", "transformer/config.json", "transformer/model.safetensors.index.json")
@@ -262,7 +261,6 @@ def _load_image_service(model_ref: str, *, lora_paths=None, scheduler=None):
 
     config = ImageConfig(model_ref=model_ref)
     if lora_paths:
-        scales = None
         config = replace(config, lora_paths=tuple(lora_paths))
     if scheduler:
         config = config.with_overrides(scheduler=scheduler)
@@ -321,7 +319,6 @@ def _image_synthesize(args) -> int:
     """`vllm-omni-mlx image --model <repo> --prompt "..." --out out.png` —
     zero-shot t2i, `--lora` (e.g. the Viggle turbo distilled adapter) +
     `--scheduler viggle_turbo` for the 6-step fast lane."""
-    import time
 
     from .diffusion.config import ImageConfig, load_image_model
     from .diffusion.service import ImageService, parse_size
@@ -348,7 +345,6 @@ def _image_synthesize(args) -> int:
     print(f"image model license: {config.license}", file=sys.stderr)
 
     service = ImageService(model, config)
-    start = time.perf_counter()
     try:
         results = service.generate(args.prompt, seed=args.seed, n=1)
     except ValueError as exc:

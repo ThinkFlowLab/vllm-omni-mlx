@@ -8,7 +8,7 @@ import unittest
 
 from starlette.testclient import TestClient
 
-from vllm_omni_mlx.diffusion.service import ImageError, ImageResult, ImageService, parse_size
+from vllm_omni_mlx.diffusion.service import ImageError, ImageService, parse_size
 from vllm_omni_mlx.server import create_app
 
 

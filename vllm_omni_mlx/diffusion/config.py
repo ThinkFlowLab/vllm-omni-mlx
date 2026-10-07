@@ -8,7 +8,7 @@ pinned by the [image] extra.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 DEFAULT_MODEL = "mlx-community/Qwen-Image-2.1-mflux-q4"
