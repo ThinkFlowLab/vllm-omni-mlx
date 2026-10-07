@@ -55,14 +55,14 @@ vllm-omni-mlx is flexible and easy to use with:
 | **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
 | **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
 | **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
-| **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
+| **Diffusion** — text/image → image | Z-Image-Turbo (6B, 9-step distilled, 4-bit) | ✅ `/v1/images/generations` (mflux seam) — SD tier next (#95) |
 
 | Modality | Examples | Status |
 | --- | --- | --- |
 | **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B); VoxCPM2 (zero-shot · cloned · described voice, 30+ languages, 48 kHz) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
 | **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
 | **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
-| **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
+| **Diffusion** — text/image → image | Z-Image-Turbo (6B, 9-step distilled, 4-bit) | ✅ `/v1/images/generations` (mflux seam) — SD tier next (#95) |
 
 Text-only LLMs and image-in/text-out VLMs load through their engines but are
 not this server's target categories.
@@ -76,6 +76,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .            # server core (MLX engine stack)
 pip install -e '.[omni]'    # + vision/audio models (mlx-vlm)
 pip install -e '.[tts]'     # + speech synthesis (mlx-audio)
+pip install -e '.[image]'  # + image generation, Z-Image-Turbo (mflux)
 ```
 
 ### Dependency footprint
@@ -85,6 +86,7 @@ pip install -e '.[tts]'     # + speech synthesis (mlx-audio)
 | core | `mlx-lm`, `starlette`, `uvicorn` | 38 | ~440 MB |
 | + `[tts]` | + `mlx-audio` | 44 | ~560 MB |
 | + `[omni]` | + `mlx-vlm` | 59 | ~750 MB |
+| + `[image]` | + `mflux` | ~55 | ~870 MB |
 
 The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transformers`,
 `tokenizers`, `huggingface_hub`) plus starlette/uvicorn and almost nothing else —
@@ -92,8 +94,10 @@ The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transform
 `mlx-audio` (miniaudio, sounddevice — still no torch). The `[omni]` extra adds
 ~315 MB through `mlx-vlm` (opencv, pillow, scipy — and mlx-audio, so `[omni]`
 implies `[tts]`; that path does drag in fastapi/pydantic, contained to the
-optional extra). Measured on macOS arm64 / Python 3.13 with mlx-lm 0.32,
-mlx-vlm 0.7, and mlx-audio 0.5.7.
+optional extra). The `[image]` extra adds ~870 MB through `mflux` — the one
+extra that does pull `torch` (583 MB of it, for mflux's utility stack; MLX
+still runs every model). Measured on macOS arm64 / Python 3.13 with mlx-lm 0.32,
+mlx-vlm 0.7, mlx-audio 0.5.7, and mflux 0.21.
 
 ### Run
 
@@ -104,6 +108,9 @@ vllm-omni-mlx serve mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit \
 
 # speech-only server
 vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni
+
+# image-only server (Z-Image-Turbo, 4-bit ~5.5 GiB of weights)
+vllm-omni-mlx serve --image-model z-image-turbo                      # needs [image]
 ```
 
 Qwen3-Omni serves text-out chat today (speech-out chat is in progress); the 30B-A3B

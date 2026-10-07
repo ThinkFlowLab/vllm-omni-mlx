@@ -27,6 +27,11 @@ def build_serve_parser() -> argparse.ArgumentParser:
         default=None,
         help="also serve speech synthesis on /v1/audio/* (Qwen3-TTS via the [tts] extra); the only model when <model> is omitted",
     )
+    parser.add_argument(
+        "--image-model",
+        default=None,
+        help="also serve image generation on /v1/images/generations (Z-Image-Turbo via the [image] extra); the only model when <model> is omitted",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="bind port (default: 8000)")
     parser.add_argument(
@@ -108,8 +113,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args) -> int:
-    if not args.model and not args.tts_model:
-        build_serve_parser().error("a model is required (or --tts-model to serve speech alone)")
+    if not args.model and not args.tts_model and not args.image_model:
+        build_serve_parser().error("a model is required (or --tts-model / --image-model to serve one alone)")
     if args.omni and not args.model:
         build_serve_parser().error("--omni applies to the served model")
     if args.omni and args.tts_model:
@@ -152,10 +157,40 @@ def _serve(args) -> int:
             print(f"error: failed to load TTS model '{args.tts_model}': {exc}", file=sys.stderr)
             return 1
 
-    names = [n for n in (getattr(backend, "name", None), getattr(tts_service, "name", None)) if n]
+    image_service = None
+    if args.image_model:
+        try:
+            image_service = _load_image(args.image_model)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"error: failed to load image model '{args.image_model}': {exc}", file=sys.stderr)
+            return 1
+
+    names = [
+        n
+        for n in (
+            getattr(backend, "name", None),
+            getattr(tts_service, "name", None),
+            getattr(image_service, "name", None),
+        )
+        if n
+    ]
     print(f"serving {', '.join(names)} on http://{args.host}:{args.port}", file=sys.stderr)
-    uvicorn.run(create_app(backend, api_key=args.api_key, tts_service=tts_service), host=args.host, port=args.port, log_level=args.log_level)
+    uvicorn.run(
+        create_app(backend, api_key=args.api_key, tts_service=tts_service, image_service=image_service),
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+    )
     return 0
+
+
+def _load_image(model_ref: str):
+    """Load an image-generation model for serving (#91/#99). Z-Image-Turbo
+    via the mflux seam: pre-quantized mirror repos honor their stored
+    4-bit level; the canonical fp16 repo quantizes on load."""
+    from .diffusion import load_image_service
+
+    return load_image_service(model_ref)
 
 
 def _load_tts(model_ref: str):
