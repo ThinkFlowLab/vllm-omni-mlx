@@ -216,6 +216,26 @@ class TranscriptionRouteTest(unittest.TestCase):
         not_multipart = self.client.post("/v1/audio/transcriptions", json={"file": "x"}, headers=self.AUTH)
         self.assertEqual(not_multipart.status_code, 400)
 
+    def test_oversized_upload_is_413_without_reaching_the_service(self):
+        with mock.patch("vllm_omni_mlx.server.asr_max_upload", 8):
+            response = self.client.post(
+                "/v1/audio/transcriptions", files={"file": ("a.wav", b"123456789", "audio/wav")}, headers=self.AUTH
+            )
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("cap", response.json()["error"]["message"])
+        self.assertEqual(self.asr.calls, [])
+
+    def test_file_typed_text_fields_are_400(self):
+        for name in ("prompt", "language", "hotwords", "temperature", "response_format"):
+            response = self.client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("a.wav", b"RIFFdata", "audio/wav"), name: ("x.txt", b"hi", "text/plain")},
+                headers=self.AUTH,
+            )
+            self.assertEqual(response.status_code, 400, name)
+            self.assertIn(name, response.json()["error"]["message"])
+        self.assertEqual(self.asr.calls, [])
+
     def test_service_value_error_maps_to_400(self):
         response = self.client.post(
             "/v1/audio/transcriptions", files={"file": ("a.wav", b"", "audio/wav")}, headers=self.AUTH

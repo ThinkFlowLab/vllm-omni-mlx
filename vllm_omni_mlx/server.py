@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .asr.service import MAX_UPLOAD_BYTES as asr_max_upload
 from .asr.service import RESPONSE_FORMATS as asr_render_formats
 from .asr.service import render as asr_render
 from .backends import Backend, Chunk
@@ -386,6 +387,9 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             upload = form.get("file")
             if upload is None or isinstance(upload, str):
                 raise ApiError(400, "file is required (multipart audio upload)")
+            for name in ("response_format", "stream", "temperature", "language", "prompt", "hotwords"):
+                if name in form and not isinstance(form.get(name), str):
+                    raise ApiError(400, f"{name} must be a text field, not a file")
             fmt = form.get("response_format", "json")
             if form.get("stream") not in (None, "", "false", "False", "0"):
                 raise ApiError(400, "streaming transcription is not supported yet; omit stream")
@@ -398,7 +402,11 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             hotword_list = [w.strip() for w in str(hotwords).replace("\n", ",").split(",") if w.strip()] if hotwords else None
             if fmt not in asr_render_formats:
                 raise ApiError(400, f"response_format must be one of {', '.join(asr_render_formats)}, got '{fmt}'")
-            data = await upload.read()
+            # refuse before reading: the upload is already spooled by Starlette,
+            # but pulling it all into memory first would defeat the cap
+            if upload.size is not None and upload.size > asr_max_upload:
+                raise ApiError(413, f"file is {upload.size / 2**20:.1f} MiB; the cap is {asr_max_upload // 2**20} MiB")
+            data = await upload.read(asr_max_upload + 1)
             result = await asyncio.to_thread(
                 asr_service.transcribe,
                 data,
