@@ -142,7 +142,12 @@ tracked as follow-up together with an upstream mflux quantize-predicate fix.
 - **The step loop is the decode loop** (same doctrine as the TTS per-frame
   work): latency scales with latent token count ((H/16)·(W/16)) — a 4×
   pixel-count step costs ~4× (compute-bound at 4-bit), so resolution is the
-  primary latency knob, then steps.
+  primary latency knob, then steps. Phase breakdown of time-to-image
+  (instrumented at 512²/1024²): **~97% denoise loop** (N × DiT step), ~1–8%
+  VAE decode (scales with pixels: 1.6 s @512², 7 s @1024²), ~0.3 s prompt
+  encode per new prompt (free on repeats — mflux caches the text-prefix KV
+  in-process), <1% noise init + PNG encode. One-time per process: 7–8 s load,
+  plus first-generation kernel compile per resolution.
 - **Prompt encoding is per-request** (~2 s at load-warm state): the text
   encoder runs on every generate. A prompt-embedding cache keyed by prompt
   hash is the obvious follow-up (the TTS prefix-cache analog).
