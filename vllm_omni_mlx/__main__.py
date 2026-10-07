@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 
 
 def build_serve_parser() -> argparse.ArgumentParser:
@@ -26,6 +27,22 @@ def build_serve_parser() -> argparse.ArgumentParser:
         "--tts-model",
         default=None,
         help="also serve speech synthesis on /v1/audio/* (Qwen3-TTS via the [tts] extra); the only model when <model> is omitted",
+    )
+    parser.add_argument(
+        "--image-model",
+        default=None,
+        help="also serve image generation on /v1/images/generations (mflux via the [image] extra); the only model when <model> is omitted",
+    )
+    parser.add_argument(
+        "--image-lora",
+        action="append",
+        default=None,
+        help="LoRA adapter for the image model (repeatable, HF repo or path; e.g. the Viggle turbo distilled LoRA)",
+    )
+    parser.add_argument(
+        "--image-scheduler",
+        default=None,
+        help="image sampler override (e.g. viggle_turbo for the Viggle turbo LoRA; default: the model's linear scheduler)",
     )
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="bind port (default: 8000)")
@@ -82,9 +99,28 @@ def build_parser() -> argparse.ArgumentParser:
         prog="vllm-omni-mlx",
         description="Lightweight OpenAI- and Anthropic-compatible omni-modality server for Apple Silicon.",
     )
-    sub = parser.add_subparsers(dest="command", required=True, metavar="{serve,tts}")
+    sub = parser.add_subparsers(dest="command", required=True, metavar="{serve,tts,image}")
     sub.add_parser("serve", parents=[build_serve_parser()], help="serve a model")
     sub.add_parser("tts", parents=[build_tts_parser()], help="one-shot speech synthesis to a WAV file")
+    sub.add_parser("image", parents=[build_image_parser()], help="one-shot image generation to a PNG file")
+    return parser
+
+
+def build_image_parser() -> argparse.ArgumentParser:
+    """`vllm-omni-mlx image --model <repo> --prompt "..." --out out.png`."""
+    parser = argparse.ArgumentParser(prog="vllm-omni-mlx image", description="Generate an image to a PNG file.", add_help=False)
+    parser.add_argument("--model", default=None, help="image model repo or path (default: the [image] default)")
+    parser.add_argument("--prompt", required=True, help="text prompt")
+    parser.add_argument("--negative-prompt", default=None)
+    parser.add_argument("--size", default=None, help="WIDTHxHEIGHT, sides multiples of 16 (default: 1024x1024)")
+    parser.add_argument("--steps", type=int, default=None)
+    parser.add_argument("--guidance", type=float, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--out", required=True, help="output PNG path")
+    parser.add_argument("--lora", action="append", default=None, help="LoRA adapter HF repo or path (repeatable)")
+    parser.add_argument("--lora-scale", type=float, action="append", default=None, help="scale per --lora (repeatable)")
+    parser.add_argument("--scheduler", default=None, help="sampler override (e.g. viggle_turbo)")
+    parser.add_argument("--quantize", type=int, default=None, help="on-the-fly quantization for dense repos (e.g. 4)")
     return parser
 
 
@@ -104,16 +140,46 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "serve":
         return _serve(args)
+    if args.command == "image":
+        return _image_synthesize(args)
     return _tts_synthesize(args)
 
 
+def _looks_like_image(model_ref: str) -> bool:
+    """Diffusion checkpoints announce themselves by their diffusers/mflux
+    layout rather than a root config.json: the official Qwen-Image-2.1 repo
+    has model_index.json, mflux-format conversions keep the transformer/
+    subdir with an index (the q4 repo has no config.json at all)."""
+    import os
+
+    markers = ("model_index.json", "transformer/config.json", "transformer/model.safetensors.index.json")
+    for marker in markers:
+        try:
+            if os.path.isdir(model_ref):
+                if not os.path.exists(os.path.join(model_ref, marker)):
+                    continue
+                with open(os.path.join(model_ref, marker)) as f:
+                    content = f.read()
+            else:
+                from huggingface_hub import hf_hub_download
+
+                with open(hf_hub_download(model_ref, marker)) as f:
+                    content = f.read()
+            return "_class_name" not in content or "QwenImage" in content or "DiffusionPipeline" in content
+        except Exception:
+            continue
+    return False
+
+
 def _serve(args) -> int:
-    if not args.model and not args.tts_model:
-        build_serve_parser().error("a model is required (or --tts-model to serve speech alone)")
+    if not args.model and not args.tts_model and not args.image_model:
+        build_serve_parser().error("a model is required (or --tts-model / --image-model to serve speech or images alone)")
     if args.omni and not args.model:
         build_serve_parser().error("--omni applies to the served model")
     if args.omni and args.tts_model:
         build_serve_parser().error("--omni and --tts-model are mutually exclusive: --omni already serves the model as TTS when it is a Qwen3-TTS checkpoint")
+    if args.image_model and args.model and _looks_like_image(args.model):
+        build_serve_parser().error("--image-model is redundant: <model> is itself an image checkpoint and is served as one")
 
     import uvicorn
 
@@ -121,11 +187,16 @@ def _serve(args) -> int:
 
     backend = None
     tts_service = None
+    image_service = None
     if args.model:
         from .backends import _peek_config, load_backend
 
         try:
-            if args.omni:
+            if _looks_like_image(args.model):
+                image_service = _load_image_service(
+                    args.model, lora_paths=args.image_lora, scheduler=args.image_scheduler
+                )
+            elif args.omni:
                 if _looks_like_tts(_peek_config(args.model)):
                     tts_service = _load_tts(args.model)
                 else:
@@ -152,10 +223,52 @@ def _serve(args) -> int:
             print(f"error: failed to load TTS model '{args.tts_model}': {exc}", file=sys.stderr)
             return 1
 
-    names = [n for n in (getattr(backend, "name", None), getattr(tts_service, "name", None)) if n]
+    if args.image_model:
+        try:
+            image_service = _load_image_service(
+                args.image_model, lora_paths=args.image_lora, scheduler=args.image_scheduler
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"error: failed to load image model '{args.image_model}': {exc}", file=sys.stderr)
+            return 1
+
+    names = [
+        n
+        for n in (
+            getattr(backend, "name", None),
+            getattr(tts_service, "name", None),
+            getattr(image_service, "name", None),
+        )
+        if n
+    ]
     print(f"serving {', '.join(names)} on http://{args.host}:{args.port}", file=sys.stderr)
-    uvicorn.run(create_app(backend, api_key=args.api_key, tts_service=tts_service), host=args.host, port=args.port, log_level=args.log_level)
+    if image_service is not None:
+        print(f"image model license: {image_service.license}", file=sys.stderr)
+    uvicorn.run(
+        create_app(backend, api_key=args.api_key, tts_service=tts_service, image_service=image_service),
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+    )
     return 0
+
+
+def _load_image_service(model_ref: str, *, lora_paths=None, scheduler=None):
+    import time
+
+    from .diffusion.config import ImageConfig, load_image_model
+    from .diffusion.service import ImageService
+
+    config = ImageConfig(model_ref=model_ref)
+    if lora_paths:
+        config = replace(config, lora_paths=tuple(lora_paths))
+    if scheduler:
+        config = config.with_overrides(scheduler=scheduler)
+    started = time.perf_counter()
+    model = load_image_model(config)
+    service = ImageService(model, config)
+    print(f"image model loaded in {time.perf_counter() - started:.1f}s ({service.license})", file=sys.stderr)
+    return service
 
 
 def _load_tts(model_ref: str):
@@ -200,6 +313,51 @@ def _load_tts(model_ref: str):
     except Exception as exc:
         print(f"warning: tts streaming prewarm failed ({exc}); first request will trace on demand", file=sys.stderr)
     return TTSService(model, config)
+
+
+def _image_synthesize(args) -> int:
+    """`vllm-omni-mlx image --model <repo> --prompt "..." --out out.png` —
+    zero-shot t2i, `--lora` (e.g. the Viggle turbo distilled adapter) +
+    `--scheduler viggle_turbo` for the 6-step fast lane."""
+
+    from .diffusion.config import ImageConfig, load_image_model
+    from .diffusion.service import ImageService, parse_size
+
+    config = ImageConfig()
+    if args.model:
+        config = replace(config, model_ref=args.model)
+    if args.lora:
+        config = replace(config, lora_paths=tuple(args.lora), lora_scales=tuple(args.lora_scale or ()))
+    config = config.with_overrides(
+        size=args.size,
+        steps=args.steps,
+        guidance=args.guidance,
+        negative_prompt=args.negative_prompt,
+        scheduler=args.scheduler,
+        quantize=args.quantize,
+    )
+    width, height = parse_size(config.size)
+    try:
+        model = load_image_model(config)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"error: failed to load image model '{config.model_ref}': {exc}", file=sys.stderr)
+        return 1
+    print(f"image model license: {config.license}", file=sys.stderr)
+
+    service = ImageService(model, config)
+    try:
+        results = service.generate(args.prompt, seed=args.seed, n=1)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    result = results[0]
+    with open(args.out, "wb") as f:
+        f.write(result.png)
+    print(
+        f"wrote {args.out}: {width}x{height} in {result.elapsed:.2f}s"
+        f" ({result.steps} steps, seed {result.seed})"
+    )
+    return 0
 
 
 def _tts_synthesize(args) -> int:

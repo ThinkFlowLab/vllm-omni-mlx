@@ -12,7 +12,7 @@ Easy, fast, and lightweight omni-modality model serving for Apple Silicon
 </h3>
 
 <p align="center">
-| <a href="docs/architecture.md"><b>Architecture</b></a> | <a href="docs/speech.md"><b>Speech Guide</b></a> | <a href="docs/profiling.md"><b>Profiling Guide</b></a> | <a href="examples/"><b>Examples</b></a> | <a href="CONTRIBUTING.md"><b>Contributing</b></a> |
+| <a href="docs/architecture.md"><b>Architecture</b></a> | <a href="docs/speech.md"><b>Speech Guide</b></a> | <a href="docs/image.md"><b>Image Guide</b></a> | <a href="docs/profiling.md"><b>Profiling Guide</b></a> | <a href="examples/"><b>Examples</b></a> | <a href="CONTRIBUTING.md"><b>Contributing</b></a> |
 </p>
 
 ---
@@ -55,14 +55,14 @@ vllm-omni-mlx is flexible and easy to use with:
 | **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
 | **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
 | **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
-| **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
+| **Diffusion** — text → image | Qwen-Image-2.1 4-bit (+ Viggle turbo fast lane) | ✅ verified end-to-end — [image guide](docs/image.md) (#101) |
 
 | Modality | Examples | Status |
 | --- | --- | --- |
 | **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B); VoxCPM2 (zero-shot · cloned · described voice, 30+ languages, 48 kHz) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
 | **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
 | **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
-| **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
+| **Diffusion** — text → image | Qwen-Image-2.1 4-bit (+ Viggle turbo fast lane) | ✅ verified end-to-end — [image guide](docs/image.md) (#101) |
 
 Text-only LLMs and image-in/text-out VLMs load through their engines but are
 not this server's target categories.
@@ -85,6 +85,7 @@ pip install -e '.[tts]'     # + speech synthesis (mlx-audio)
 | core | `mlx-lm`, `starlette`, `uvicorn` | 38 | ~440 MB |
 | + `[tts]` | + `mlx-audio` | 44 | ~560 MB |
 | + `[omni]` | + `mlx-vlm` | 59 | ~750 MB |
+| + `[image]` | + `mflux` | 61 | ~1.3 GB |
 
 The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transformers`,
 `tokenizers`, `huggingface_hub`) plus starlette/uvicorn and almost nothing else —
@@ -92,8 +93,11 @@ The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transform
 `mlx-audio` (miniaudio, sounddevice — still no torch). The `[omni]` extra adds
 ~315 MB through `mlx-vlm` (opencv, pillow, scipy — and mlx-audio, so `[omni]`
 implies `[tts]`; that path does drag in fastapi/pydantic, contained to the
-optional extra). Measured on macOS arm64 / Python 3.13 with mlx-lm 0.32,
-mlx-vlm 0.7, and mlx-audio 0.5.7.
+optional extra). The `[image]` extra adds ~750 MB through `mflux` — the first
+extra that brings **torch** (the arm64 build, a hard mflux dependency) plus
+matplotlib/opencv; keep it out of installs that don't serve images. Measured on
+macOS arm64 with mlx-lm 0.32, mlx-vlm 0.7, mlx-audio 0.5.7, and mflux 0.21
+(the `[image]` row on Python 3.12, the rest on 3.13).
 
 ### Run
 
@@ -104,6 +108,15 @@ vllm-omni-mlx serve mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit \
 
 # speech-only server
 vllm-omni-mlx serve mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit --omni
+
+# image server (solo — the working set wants the box to itself; #101)
+pip install 'vllm-omni-mlx[image]'
+vllm-omni-mlx serve mlx-community/Qwen-Image-2.1-mflux-q4
+
+# 6-step fast lane: the Viggle turbo distilled LoRA + its fixed-sigma sampler
+vllm-omni-mlx serve mlx-community/Qwen-Image-2.1-mflux-q4 \
+    --image-lora Viggle/Qwen-Image-2.1-viggle-turbo:Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors \
+    --image-scheduler viggle_turbo
 ```
 
 Qwen3-Omni serves text-out chat today (speech-out chat is in progress); the 30B-A3B
@@ -134,6 +147,7 @@ re-prefill, so correctness never depends on the cache).
 | `POST /v1/chat/completions` | OpenAI (SSE streaming, multimodal content parts) |
 | `POST /v1/messages` | Anthropic (SSE streaming, image blocks) |
 | `POST /v1/audio/speech` | OpenAI audio (`wav` / chunked `pcm` with `stream: true`) |
+| `POST /v1/images/generations` | OpenAI images (`b64_json`; diffusion extras: `steps`, `guidance`, `seed`, `negative_prompt`) |
 | `GET /v1/audio/voices` | preset speakers of the loaded TTS model |
 | `GET /v1/models`, `GET /health` | model list, liveness |
 
@@ -152,6 +166,18 @@ Chat works the same way on the same server (`/v1/chat/completions`,
 cloning, streaming knobs, and per-checkpoint differences: the
 **[speech guide](docs/speech.md)**; runnable scripts in [`examples/`](examples/);
 one-shot synthesis without a server: `vllm-omni-mlx tts --voice ryan --text "..." --out out.wav`.
+
+Image generation on the image server (`prompt` in, `b64_json` out; OpenAI
+`size`/`n` plus `steps`, `guidance`, `seed`, `negative_prompt`):
+
+```sh
+curl -d '{"prompt": "a cozy harbor town at dawn", "size": "1024x1024", "seed": 42}' \
+    http://127.0.0.1:8000/v1/images/generations | python3 -c 'import base64,json,sys; print(base64.b64decode(json.load(sys.stdin)["data"][0]["b64_json"]), end="")' > out.png
+```
+
+Serving shapes, resolution/latency/memory numbers, the Viggle turbo fast lane,
+and the non-commercial license note: the **[image guide](docs/image.md)**;
+one-shot generation without a server: `vllm-omni-mlx image --prompt "..." --out out.png`.
 
 ## Design Notes & Limits
 
