@@ -81,12 +81,15 @@ delivers interval-sized chunks of the **finished** buffer — first audio lands
 when synthesis completes; incremental per-patch decode is follow-up work
 (#88).
 
-#88's serving defaults, each gated on quality: `inference_timesteps` 6 (the
-measured knee — paired-seed ASR round-trip equivalence vs the checkpoint's
-10) and load-time quantization of the blocks the checkpoint ships in bf16
-(**8-bit DiT + 4-bit encoder**; `VLLM_OMNI_VOXCPM2_QUANT` = `off`/`4bit`/`8bit`).
-Quiet-M4 steady RTF: 2.0 baseline (bf16, t=10, library eager) → **~0.6**
-(default) — 3.5×, with the HNR floors and the ASR round-trip battery passing
+#88's serving defaults, each gated on quality: `inference_timesteps` 8 and
+load-time quantization of the blocks the checkpoint ships in bf16 (**8-bit
+DiT + 4-bit encoder**; `VLLM_OMNI_VOXCPM2_QUANT` = `off`/`4bit`/`8bit`).
+The compound matters: t=6 was equivalent to t=10 on bf16 blocks, but under
+the quantized weights it degraded the ASR round-trip measurably (−0.18 mean
+over 6 paired seeds) — t=8 is the knee that survives both knobs together
+(found in review on #98 when the gate test was fixed to actually run).
+Quiet-M4 steady RTF: 2.0 baseline (bf16, t=10, library eager) → **~0.8**
+(default) — 2.5×, with the HNR floors and the ASR round-trip battery passing
 (`tests/asr_oracle.py`, oracle built by `scripts/build_asr_oracle.py`).
 
 ## One-shot, no server

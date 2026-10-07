@@ -113,5 +113,11 @@ def round_trip_similarity(model: Any, audio, sample_rate: int, reference) -> flo
 
 
 def requires_oracle(test):
-    """Skip decorator for tests that need the local oracle."""
-    return unittest.skipUnless(oracle_dir() is not None, "needs the ASR oracle (scripts/build_asr_oracle.py)")
+    """Skip decorator for tests that need the local oracle.
+
+    Applies the decorator to `test` — returning it unapplied compiles fine
+    and unittest then "passes" the test vacuously with only a
+    DeprecationWarning (caught in review on #98: the equivalence gate had
+    never actually run).
+    """
+    return unittest.skipUnless(oracle_dir() is not None, "needs the ASR oracle (scripts/build_asr_oracle.py)")(test)

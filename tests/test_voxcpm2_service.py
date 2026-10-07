@@ -105,9 +105,9 @@ class DetectionTest(unittest.TestCase):
 class ConfigTest(unittest.TestCase):
     def test_defaults_match_serving_knobs(self):
         config = VoxCPM2Config()
-        # t=6 is the #88 knee (paired-seed ASR equivalence vs the
-        # checkpoint's 10), not the checkpoint's own generate default
-        self.assertEqual(config.inference_timesteps, 6)
+        # t=8: the knee that survives the quantized-blocks compound
+        # (t=6 was equivalent on bf16 alone; see voxcpm2.VoxCPM2Config)
+        self.assertEqual(config.inference_timesteps, 8)
         self.assertEqual(config.cfg_value, 2.0)
         self.assertEqual(config.max_tokens, 2000)  # AR patches, ~20 ms each
         self.assertEqual(config.warmup_patches, 0)

@@ -58,17 +58,19 @@ DEFAULT_STREAM_INTERVAL = 0.5
 
 @dataclass(frozen=True)
 class VoxCPM2Config:
-    """Serving defaults for VoxCPM2. ``inference_timesteps`` defaults to 6,
-    the measured knee (#88: paired-seed ASR round-trip equivalence vs the
-    checkpoint's 10 — en/en2/zh median deltas within ±0.012, means flat —
-    while the solver runs 5 estimator passes per patch instead of 9, a
-    34% cut of the phase that is 85% of wall). cfg 2.0 and max 2000
+    """Serving defaults for VoxCPM2. ``inference_timesteps`` defaults to 8
+    under the quantized blocks (the load-time default): 8 is the knee that
+    survives the compound — t=6 was equivalent on bf16 (the original #88
+    study) but degrades the ASR round-trip by −0.18 mean at 8/4-bit
+    weights (4/6 seeds, found in review on #98 when the gate test was
+    fixed to actually run); t=8 measures +0.03 mean vs the checkpoint's
+    10. 7 estimator passes per patch instead of 9. cfg 2.0 and max 2000
     patches ≈ 40 s of audio at ~20 ms per patch are the checkpoint's own
     generate defaults."""
 
     model_ref: str = DEFAULT_MODEL
     instruct: str | None = None
-    inference_timesteps: int = 6
+    inference_timesteps: int = 8
     cfg_value: float = 2.0
     max_tokens: int = 2000
     warmup_patches: int = 0
