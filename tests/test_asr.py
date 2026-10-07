@@ -225,6 +225,18 @@ class TranscriptionRouteTest(unittest.TestCase):
         self.assertIn("cap", response.json()["error"]["message"])
         self.assertEqual(self.asr.calls, [])
 
+    def test_oversized_content_length_is_413_before_parsing(self):
+        with mock.patch("vllm_omni_mlx.server.asr_max_upload", 8):
+            with mock.patch("starlette.requests.Request.form", side_effect=AssertionError("parsed")) as form:
+                response = self.client.post(
+                    "/v1/audio/transcriptions",
+                    files={"file": ("a.wav", b"x" * 100_000, "audio/wav")},
+                    headers=self.AUTH,
+                )
+        self.assertEqual(response.status_code, 413)
+        form.assert_not_called()
+        self.assertEqual(self.asr.calls, [])
+
     def test_file_typed_text_fields_are_400(self):
         for name in ("prompt", "language", "hotwords", "temperature", "response_format"):
             response = self.client.post(

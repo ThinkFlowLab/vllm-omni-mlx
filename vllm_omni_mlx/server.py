@@ -22,6 +22,9 @@ from .schemas import ApiError, UnifiedRequest, normalize_anthropic, normalize_op
 
 _STARTED_AT = int(time.time())
 
+# multipart framing + the small text fields on top of the file itself
+_MULTIPART_OVERHEAD = 64 * 1024
+
 
 # --------------------------------------------------------------------------
 # helpers
@@ -378,6 +381,12 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
     async def audio_transcriptions(request: Request) -> Response:
         try:
             _check_auth(request, api_key)
+            # Starlette spools file parts to disk with no size bound, so refuse
+            # an oversized body before parsing it. A chunked body without a
+            # Content-Length is not caught here; the post-parse check still is
+            declared = request.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > asr_max_upload + _MULTIPART_OVERHEAD:
+                raise ApiError(413, f"request body is {int(declared) / 2**20:.1f} MiB; the file cap is {asr_max_upload // 2**20} MiB")
             try:
                 form = await request.form()
             except AssertionError:  # starlette: python-multipart not installed
