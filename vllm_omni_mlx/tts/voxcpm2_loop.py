@@ -296,21 +296,44 @@ class _StepClosures:
         return row, *outs
 
 
+def _quant_signature(model: Any) -> tuple:
+    """The quantization state of the blocks the closures capture (review on
+    #98): traces bake in the WEIGHTS, so a model quantized after its closures
+    were built (in-place, e.g. an experiments script) must not reuse them.
+    Signature = the projection class + its bit-width for the DiT estimator
+    and the feature encoder."""
+    def _sig(module: Any) -> tuple:
+        layers = getattr(module, "layers", None)
+        attn = getattr(layers[0], "self_attn", None) if layers else None
+        proj = getattr(attn, "q_proj", None)
+        if proj is None:
+            return ("?",)
+        return (type(proj).__name__, getattr(proj, "bits", None))
+
+    return _sig(model.feat_decoder.estimator) + _sig(model.feat_encoder)
+
+
 def closures_for(model: Any, config: VoxCPM2Config) -> _StepClosures:
     """Per-(model, thread) closure cache.
 
     MLX compiled functions are thread-bound — a closure traced on one
     thread refuses to evaluate on another ("There is no Stream(gpu, …) in
     current thread") — so traces are keyed by thread as well as model.
-    The solver's t_span and cfg strength are BAKED into the trace at
-    build, so they join the key: changing ``inference_timesteps`` or
-    ``cfg_value`` at runtime rebuilds instead of silently serving stale
-    traces. The entry validates model identity through a weakref: a
-    released and garbage-collected checkpoint's id can be REUSED by the
+    The solver's t_span, the cfg strength, and the quantization state of
+    the captured blocks are BAKED into the trace, so they join the key:
+    changing any of them at runtime rebuilds instead of silently serving
+    stale traces. The entry validates model identity through a weakref:
+    a released and garbage-collected checkpoint's id can be REUSED by the
     next load (the weight-gated batteries hit exactly that), and a stale
     entry would hand the new model traces bound to a dead thread.
     """
-    key = (id(model), threading.get_ident(), config.inference_timesteps, config.cfg_value)
+    key = (
+        id(model),
+        threading.get_ident(),
+        config.inference_timesteps,
+        config.cfg_value,
+        _quant_signature(model),
+    )
     entry = _CLOSURES.get(key)
     if entry is not None:
         model_ref, fresh_ref = entry

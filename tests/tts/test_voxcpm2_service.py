@@ -363,3 +363,37 @@ class SynthesizeRoutingTest(unittest.TestCase):
             list(voxcpm2.synthesize(self.service._model, self.service.config, "hello"))
         self.assertEqual(len(self.model.calls), 1, "escape env must use the library generate")
         self.assertFalse(voxcpm2_loop.generate_frames.called)
+
+
+class ClosureQuantKeyTest(unittest.TestCase):
+    """#98 review: the quantization state of the captured blocks must join
+    the closure-cache key — traces bake in the weights, so a model quantized
+    after its closures were built must not reuse them."""
+
+    def test_quant_signature_distinguishes_layer_states(self):
+        from vllm_omni_mlx.tts.voxcpm2_loop import _quant_signature
+
+        class FakeProj:
+            pass
+
+        class FakeQuantProj(FakeProj):
+            bits = 8
+
+        class FakeAttn:
+            q_proj = FakeQuantProj()
+
+        class FakeLayer:
+            self_attn = FakeAttn()
+
+        class FakeModule:
+            layers = [FakeLayer()]
+
+        class FakeBlocks:
+            feat_decoder = type("FD", (), {"estimator": FakeModule()})
+            feat_encoder = FakeModule()
+
+        quant = _quant_signature(FakeBlocks())
+        FakeQuantProj.bits = 4
+        self.assertNotEqual(quant, _quant_signature(FakeBlocks()))
+        FakeAttn.q_proj = FakeProj()
+        self.assertNotEqual(quant, _quant_signature(FakeBlocks()))
