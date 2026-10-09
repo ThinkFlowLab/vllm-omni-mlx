@@ -55,9 +55,14 @@ miniaudio/ffmpeg reads); keep it 0.5–30 s of clean speech. Cloning streams too
 (`stream: true` + the voice object) on the same fast path as presets — the
 loop is token-exact against mlx-audio's ICL path; chunked audio differs from
 the buffered WAV at waveform level by nature (the vocoder is stateful).
-Cloning pays per-request setup (reference re-encode + ICL prefill), so its
-time-to-first-audio is ~0.35–0.7 s vs ~0.1 s for presets — a known
-optimization target.
+Cloning pays per-request setup (reference decode + the ICL prompt prefill;
+the reference *re-encode* itself is cached per clip), so its
+time-to-first-audio is ~0.28 s on 1.7B and ~0.15 s on 0.6B vs ~0.1 s for
+presets (quiet M4, 2026-10-08). The prefill dominates and is compute-bound
+at the 4-bit GEMM floor — measured and closed as no kernel headroom on the
+1.7B ([#112](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/112));
+the **0.6B pair is the low-latency, small-memory clone pick** (clone-path
+peak 3.7 vs 5.9 GiB).
 
 ## VoxCPM2
 
@@ -100,10 +105,30 @@ vllm-omni-mlx tts --voice ryan --text "Hello from the CLI." --out out.wav
 
 ## Performance & verification
 
-Measured numbers (first-audio, sustained RTF, per-checkpoint tables) and the
-public reproduction protocol live in
-[issue #84](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/84); the
-benchmark scripts are `scripts/bench_all_checkpoints.py`,
-`scripts/bench_prefix_cache.py`, `scripts/bench_stream_rtf.py`. Correctness
-gates: HNR floors (harmonics-to-noise, the catastrophic-decode detector) plus
-token-exactness harnesses in `tests/`.
+Per-checkpoint numbers, one quiet session (M4 base · 16 GB, 2026-10-08,
+direct serving path without the HTTP layer; texts/seeds/interval identical
+to the bench scripts — provenance in
+[#2](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/2)):
+
+| Checkpoint | Path | First audio (p50) | Sustained RTF (p50) | Peak |
+| --- | --- | --- | --- | --- |
+| CustomVoice 1.7B | preset | 106 ms | 0.40 | — |
+| CustomVoice 0.6B | preset | 81 ms | 0.32 | 3.7 GiB |
+| VoiceDesign 1.7B | described voice | 85 ms | 0.41 | 4.3 GiB |
+| Base 1.7B | clone | 276 ms | 0.42 | 5.9 GiB |
+| Base 0.6B | clone | 148 ms | 0.33 | 3.7 GiB |
+
+- With a 0.5B chat model resident: speech RTF 0.47 (worst chunk-gap ratio
+  0.66), first audio 104 ms, chat TTFT 40→65 ms
+  ([#39](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/39)).
+- Clone first audio is floored by the ICL prefill at the 4-bit compute
+  floor ([#112](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/112)) —
+  16 GB machines should prefer the 0.6B pair.
+- Longer sustained runs still throttle the M4 base ~3×; the thermal
+  envelope, cross-machine numbers (M1 Max RTF 0.286), and the public
+  reproduction protocol live in
+  [issue #84](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/84); the
+  benchmark scripts are `scripts/bench_all_checkpoints.py`,
+  `scripts/bench_prefix_cache.py`, `scripts/bench_stream_rtf.py`.
+  Correctness gates: HNR floors (harmonics-to-noise, the
+  catastrophic-decode detector) plus token-exactness harnesses in `tests/`.
