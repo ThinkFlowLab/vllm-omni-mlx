@@ -20,12 +20,12 @@ def build_serve_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--omni",
         action="store_true",
-        help="serve the model omni-modally: a Qwen3-TTS checkpoint serves /v1/audio/*, anything else forces the mlx-vlm backend",
+        help="serve the model omni-modally: a Qwen3-TTS, VoxCPM2 or MOSS Nano checkpoint serves /v1/audio/*, anything else forces the mlx-vlm backend",
     )
     parser.add_argument(
         "--tts-model",
         default=None,
-        help="also serve speech synthesis on /v1/audio/* (Qwen3-TTS via the [tts] extra); the only model when <model> is omitted",
+        help="also serve speech synthesis on /v1/audio/* (Qwen3-TTS, VoxCPM2 or MOSS Nano via the [tts] extra); the only model when <model> is omitted",
     )
     parser.add_argument(
         "--asr-model",
@@ -66,19 +66,19 @@ def build_tts_parser() -> argparse.ArgumentParser:
     """`vllm-omni-mlx tts --voice vivian --text "..." --out out.wav` (#15)."""
     parser = argparse.ArgumentParser(prog="vllm-omni-mlx tts", description="Synthesize speech to a WAV file.", add_help=False)
     parser.add_argument("--model", default=None, help="TTS model repo or path (default: the [tts] default)")
-    parser.add_argument("--voice", default=None, help="preset CustomVoice speaker (e.g. vivian, ryan); VoxCPM2 accepts only 'default'")
-    parser.add_argument("--language", default=None, help="spoken language hint (default: auto; not supported on VoxCPM2)")
-    parser.add_argument("--instruct", default=None, help="emotion/style instruction, or a VoxCPM2 voice description")
+    parser.add_argument("--voice", default=None, help="preset CustomVoice speaker (e.g. vivian, ryan); VoxCPM2 accepts only 'default'; MOSS Nano requires --ref-audio instead")
+    parser.add_argument("--language", default=None, help="spoken language hint (default: auto; not supported on VoxCPM2; MOSS Nano accepts only auto)")
+    parser.add_argument("--instruct", default=None, help="emotion/style instruction, or a VoxCPM2 voice description (not supported on MOSS Nano)")
     parser.add_argument(
         "--ref-audio",
         default=None,
-        help="path to a reference clip for VoxCPM2 voice cloning (0.5–30 s)",
+        help="path to a reference clip for VoxCPM2 or MOSS Nano voice cloning (0.5–30 s); required for MOSS Nano",
     )
     parser.add_argument("--text", required=True, help="text to synthesize")
     parser.add_argument("--out", required=True, help="output WAV path")
-    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--temperature", type=float, default=None, help="sampling temperature (MOSS Nano: audio sampler only, must be positive)")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--max-tokens", default=None, help="Qwen3-TTS tokens or VoxCPM2 audio patches (~20 ms each, default 2000)")
+    parser.add_argument("--max-tokens", default=None, help="Qwen3-TTS tokens, VoxCPM2 audio patches (~20 ms each, default 2000), or MOSS Nano audio frames per text chunk (80 ms each, default 375)")
     return parser
 
 
@@ -96,10 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _looks_like_tts(config: dict) -> bool:
     """TTS checkpoints announce themselves in ``config.json``: Qwen3-TTS via
     ``tts_model_type`` (the same key tts/variants.py dispatches on after
-    load) or ``model_type``, VoxCPM2 via ``architecture`` (#71)."""
+    load) or ``model_type``, VoxCPM2 via ``architecture`` (#71),
+    MOSS Nano via ``model_type`` (#73)."""
     return (
         "tts_model_type" in config
-        or config.get("model_type") == "qwen3_tts"
+        or config.get("model_type") in ("qwen3_tts", "moss_tts_nano")
         or config.get("architecture") == "voxcpm2"
     )
 
@@ -118,7 +119,7 @@ def _serve(args) -> int:
     if args.omni and not args.model:
         build_serve_parser().error("--omni applies to the served model")
     if args.omni and args.tts_model:
-        build_serve_parser().error("--omni and --tts-model are mutually exclusive: --omni already serves the model as TTS when it is a Qwen3-TTS checkpoint")
+        build_serve_parser().error("--omni and --tts-model are mutually exclusive: --omni already serves the model as TTS when it is a TTS checkpoint")
 
     import uvicorn
 
@@ -200,12 +201,27 @@ def _load_tts(model_ref: str):
     synthesize at startup (a 400 per request is the late signal otherwise),
     prewarm the compiled streaming shapes, wrap. VoxCPM2 (#71): eager load
     of the mlx-audio model — nothing to prewarm (its generate is
-    single-yield; compiled/incremental decode is follow-up loop work)."""
+    single-yield; compiled/incremental decode is follow-up loop work).
+    MOSS Nano (#73): load the model and codec, then wrap its cloning service."""
     import time
 
     from .backends import _peek_config
 
-    if _peek_config(model_ref).get("architecture") == "voxcpm2":
+    model_config = _peek_config(model_ref)
+    if model_config.get("model_type") == "moss_tts_nano":
+        from .tts.moss_nano import MossNanoConfig, MossNanoService, load_moss_nano_model
+
+        started = time.perf_counter()
+        config = MossNanoConfig(model_ref=model_ref)
+        service = MossNanoService(load_moss_nano_model(config), config)
+        print(
+            f"moss nano loaded in {time.perf_counter() - started:.1f}s "
+            f"({service.sample_rate} Hz, voice cloning)",
+            file=sys.stderr,
+        )
+        return service
+
+    if model_config.get("architecture") == "voxcpm2":
         from .tts.voxcpm2 import VoxCPM2Config, VoxCPM2Service, load_voxcpm2_model
 
         started = time.perf_counter()
@@ -241,8 +257,16 @@ def _load_tts(model_ref: str):
 def _tts_synthesize(args) -> int:
     from .backends import _peek_config
 
-    if args.model and _peek_config(args.model).get("architecture") == "voxcpm2":
-        return _tts_synthesize_voxcpm2(args)
+    if args.model:
+        try:
+            model_config = _peek_config(args.model)
+        except (RuntimeError, ValueError, OSError) as exc:
+            print(f"error: failed to read TTS model config '{args.model}': {exc}", file=sys.stderr)
+            return 1
+        if model_config.get("model_type") == "moss_tts_nano":
+            return _tts_synthesize_moss_nano(args)
+        if model_config.get("architecture") == "voxcpm2":
+            return _tts_synthesize_voxcpm2(args)
 
     import time
 
@@ -250,7 +274,7 @@ def _tts_synthesize(args) -> int:
     from .tts.generate import synthesize, wav_bytes
 
     if args.ref_audio:
-        print("error: --ref-audio needs a VoxCPM2 model (--model mlx-community/VoxCPM2-4bit); Qwen3-TTS clones via the serving API's voice object", file=sys.stderr)
+        print("error: --ref-audio needs a VoxCPM2 or MOSS Nano model; Qwen3-TTS clones via the serving API's voice object", file=sys.stderr)
         return 1
     config = TTSConfig()
     if args.model:
@@ -273,6 +297,64 @@ def _tts_synthesize(args) -> int:
         f.write(data)
     frames = (len(data) - 44) // 2
     print(f"wrote {args.out}: {frames / 24000:.2f}s of audio in {elapsed:.2f}s (RTF {elapsed / (frames / 24000):.2f})")
+    return 0
+
+
+def _tts_synthesize_moss_nano(args) -> int:
+    """Clone a reference voice through the same service used by /v1/audio/speech."""
+    import base64
+    import io
+    import math
+    import time
+    import wave
+
+    if not args.ref_audio:
+        print("error: MOSS Nano voice cloning requires --ref-audio (0.5–30 s)", file=sys.stderr)
+        return 1
+    if args.voice is not None:
+        print("error: MOSS Nano has no preset voices; use --ref-audio without --voice", file=sys.stderr)
+        return 1
+    if args.instruct:
+        print("error: --instruct is not supported on MOSS Nano", file=sys.stderr)
+        return 1
+    if args.language not in (None, "", "auto"):
+        print("error: MOSS Nano selects language from the text; omit --language or use auto", file=sys.stderr)
+        return 1
+
+    from .tts.moss_nano import MossNanoConfig, MossNanoService, load_moss_nano_model
+
+    try:
+        overrides = {}
+        if args.max_tokens is not None:
+            try:
+                overrides["max_new_frames"] = int(args.max_tokens)
+            except ValueError:
+                raise ValueError("--max-tokens must be a positive integer for MOSS Nano") from None
+            if overrides["max_new_frames"] < 1:
+                raise ValueError("--max-tokens must be a positive integer for MOSS Nano")
+        if args.temperature is not None:
+            if not math.isfinite(args.temperature) or args.temperature <= 0:
+                raise ValueError("--temperature must be finite and positive for MOSS Nano")
+            overrides["audio_temperature"] = args.temperature
+        if args.seed is not None:
+            overrides["seed"] = args.seed
+        config = MossNanoConfig(model_ref=args.model, **overrides)
+        with open(args.ref_audio, "rb") as f:
+            voice = {"ref_audio": base64.b64encode(f.read()).decode("ascii")}
+        service = MossNanoService(load_moss_nano_model(config), config)
+        start = time.perf_counter()
+        data, _ = service.speech_bytes(args.text, voice=voice, response_format="wav")
+        elapsed = time.perf_counter() - start
+        with wave.open(io.BytesIO(data), "rb") as wav:
+            duration = wav.getnframes() / wav.getframerate()
+        if duration <= 0:
+            raise RuntimeError("model produced no audio")
+        with open(args.out, "wb") as f:
+            f.write(data)
+    except (RuntimeError, ValueError, OSError, wave.Error) as exc:
+        print(f"error: MOSS Nano synthesis failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"wrote {args.out}: {duration:.2f}s of audio in {elapsed:.2f}s (RTF {elapsed / duration:.2f})")
     return 0
 
 

@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 
+import anyio
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -114,6 +115,83 @@ async def _bridge(generator: Iterator[Chunk], cancel: threading.Event) -> AsyncI
     finally:
         cancel.set()
         await asyncio.to_thread(worker.join, 5.0)
+
+
+_AUDIO_STREAM_END = object()
+
+
+class _AudioStream:
+    """Pull one chunk at a time and close without racing an executing generator."""
+
+    def __init__(self, chunks: Iterator[bytes]):
+        self._chunks = iter(chunks)
+        self._lock = threading.Lock()
+        self._running = False
+        self._closed = False
+        self._close_started = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> bytes:
+        chunk = await asyncio.to_thread(self._next)
+        if chunk is _AUDIO_STREAM_END:
+            raise StopAsyncIteration
+        return chunk
+
+    def _close(self) -> None:
+        close = getattr(self._chunks, "close", None)
+        if close is not None:
+            close()
+
+    def _next(self):
+        with self._lock:
+            if self._closed:
+                return _AUDIO_STREAM_END
+            self._running = True
+        try:
+            return next(self._chunks, _AUDIO_STREAM_END)
+        finally:
+            with self._lock:
+                self._running = False
+                close = self._closed and not self._close_started
+                if close:
+                    self._close_started = True
+            if close:
+                self._close()
+
+    async def aclose(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            close = not self._running
+            if close:
+                self._close_started = True
+        # Queue-backed services can interrupt a blocked next() immediately.
+        # Plain generators have no such hook; their iteration worker closes
+        # them at the next yield, never concurrently with executing Python.
+        cancel = getattr(self._chunks, "cancel", None)
+        try:
+            if cancel is not None:
+                cancel()
+        finally:
+            if close:
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(self._close)
+
+
+class _AudioStreamingResponse(StreamingResponse):
+    def __init__(self, chunks: Iterator[bytes], **kwargs):
+        self._audio_stream = _AudioStream(chunks)
+        super().__init__(self._audio_stream, **kwargs)
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # This also runs if sending headers fails before the first next().
+            await self._audio_stream.aclose()
 
 
 # --------------------------------------------------------------------------
@@ -342,7 +420,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
                     float(interval) if interval is not None else None,
                     float(initial_interval) if initial_interval is not None else None,
                 )
-                return StreamingResponse(
+                return _AudioStreamingResponse(
                     chunks,
                     media_type="audio/pcm",
                     headers={

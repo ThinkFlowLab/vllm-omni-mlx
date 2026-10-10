@@ -2,6 +2,16 @@
 
 Operational and development scripts.
 
+- `bench_moss_nano.py`: compare buffered and incremental MOSS Nano synthesis
+  with a cloning reference. Reports first-audio latency, chunk intervals, total
+  time, audio duration, real-time factor and peak MLX memory for cold and warm
+  requests. Requires `[tts]` and the model/codec weights:
+
+  ```sh
+  python scripts/bench_moss_nano.py --ref-audio reference.wav \
+      --text "你好，这是流式语音测试。" --interval 0.5 --initial-interval 0.08
+  ```
+
 - `latency_probe.py` (#6): TTFT / inter-token latency probe against a running
   server — cold vs cached prefix, per model — so "extreme low latency" has
   numbers. Stdlib only:
