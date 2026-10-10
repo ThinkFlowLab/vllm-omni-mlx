@@ -18,6 +18,8 @@ Easy, fast, and lightweight omni-modality model serving for Apple Silicon
 ---
 
 *Latest News* 🔥
+- [2026/10] Speech recognition served: `/v1/audio/transcriptions` over Qwen3-ASR (mlx-audio) — greedy decode, `json`/`text`/`verbose_json` formats, TTS→ASR round-trip WER gate ([#104](https://github.com/ThinkFlowLab/vllm-omni-mlx/pull/104), [#68](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/68) tasks 1–3).
+- [2026/10] VoxCPM2 3.5× decode speedup — timestep knee + quality-gated quantization ([#98](https://github.com/ThinkFlowLab/vllm-omni-mlx/pull/98), [#88](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/88)); MOSS-TTS-Nano-100M AR backend joins the TTS family ([#110](https://github.com/ThinkFlowLab/vllm-omni-mlx/pull/110), [#73](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/73)).
 - [2026/10] **[v0.1.0 released](https://github.com/ThinkFlowLab/vllm-omni-mlx/releases/tag/v0.1.0)** — the Qwen3-TTS family is fully served on Apple Silicon: preset/instructed voices, zero-shot voice cloning, and text-described voices (VoiceDesign), buffered and streaming, across all five 4-bit checkpoints (0.6B/1.7B). First audio in **~0.1 s** (88 ms on M1 Max), sustained RTF **0.29–0.45**, bit-reproducible streams — numbers reproduced on two machines ([#84](https://github.com/ThinkFlowLab/vllm-omni-mlx/issues/84)).
 - [2026/10] Batch-1 latency stack: compiled per-frame decode, per-voice prefix cache, single-codec-frame first chunk for TTS; cross-turn prompt cache (8.3× faster TTFT), `--draft-model` and `--kv-bits` for chat.
 
@@ -52,16 +54,9 @@ vllm-omni-mlx is flexible and easy to use with:
 
 | Modality | Examples | Status |
 | --- | --- | --- |
-| **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
+| **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B); VoxCPM2 (zero-shot · cloned · described voice, 30+ languages, 48 kHz); MOSS-TTS-Nano-100M (AR, ref-audio cloning) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
 | **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
-| **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
-| **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
-
-| Modality | Examples | Status |
-| --- | --- | --- |
-| **TTS** — text → speech | Qwen3-TTS (CustomVoice · Base · VoiceDesign, 0.6B/1.7B); VoxCPM2 (zero-shot · cloned · described voice, 30+ languages, 48 kHz) | ✅ verified end-to-end, buffered + streaming — [speech guide](docs/speech.md) |
-| **Omni** — any-to-any chat | Qwen3-Omni 30B-A3B | 🚧 chat works via mlx-vlm; speech-out chat in progress |
-| **ASR** — speech → text | Whisper, Qwen3-ASR, Voxtral, … | 🚧 planned — `/v1/audio/transcriptions` (#68) |
+| **ASR** — speech → text | Qwen3-ASR (0.6B/1.7B, 4-bit; decoder family) | ✅ served — `/v1/audio/transcriptions` (#104); streaming + prefix cache pending (#68) |
 | **Diffusion** — text/image → image | — | 🚧 planned — roadmap (#2) |
 
 Text-only LLMs and image-in/text-out VLMs load through their engines but are
@@ -79,6 +74,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .            # server core (MLX engine stack)
 pip install -e '.[omni]'    # + vision/audio models (mlx-vlm)
 pip install -e '.[tts]'     # + speech synthesis (mlx-audio)
+pip install -e '.[asr]'     # + speech recognition (mlx-audio + python-multipart)
 ```
 
 ### Dependency footprint
@@ -95,7 +91,9 @@ The core install pulls in the MLX stack (`mlx` + `mlx-metal` kernels, `transform
 `mlx-audio` (miniaudio, sounddevice — still no torch). The `[omni]` extra adds
 ~315 MB through `mlx-vlm` (opencv, pillow, scipy — and mlx-audio, so `[omni]`
 implies `[tts]`; that path does drag in fastapi/pydantic, contained to the
-optional extra). Measured on macOS arm64 / Python 3.13 with mlx-lm 0.32,
+optional extra). The `[asr]` extra pins the same `mlx-audio` as `[tts]` and
+adds only `python-multipart`, so it costs nothing beyond a `[tts]` install.
+Measured on macOS arm64 / Python 3.13 with mlx-lm 0.32,
 mlx-vlm 0.7, and mlx-audio 0.5.7.
 
 ### Run
@@ -114,8 +112,9 @@ Qwen3-Omni serves text-out chat today (speech-out chat is in progress); the 30B-
 
 Options: `--host` (default `127.0.0.1`), `--port` (default `8000`), `--backend auto|text|omni`
 (auto sniffs `config.json` for vision/audio sections), `--omni` (serve the model omni-modally:
-a Qwen3-TTS checkpoint serves `/v1/audio/*`, anything else forces the omni backend),
-`--api-key` to require `Authorization: Bearer …` or `x-api-key`.
+a Qwen3-TTS, VoxCPM2, or MOSS Nano checkpoint serves `/v1/audio/*`, anything else forces
+the omni backend), `--asr-model <repo>` to also serve speech recognition on
+`/v1/audio/transcriptions`, `--api-key` to require `Authorization: Bearer …` or `x-api-key`.
 
 Performance flags:
 
@@ -176,7 +175,8 @@ See [docs/architecture.md](docs/architecture.md) for the architecture diagram an
   both APIs. Tools/function calling are not supported yet.
 - **Media**: the chat path targets Qwen3-Omni — text, image, and audio in, text out today;
   speech-out chat via its talker and video input are future work. Speech out today is the TTS
-  endpoint; speech in (ASR via mlx-audio stt) is planned. Vision-language and text-only
+  endpoint; speech in is the ASR endpoint (`/v1/audio/transcriptions` over Qwen3-ASR —
+  streaming transcription and prefix caching pending, #68). Vision-language and text-only
   checkpoints load through their engines but are not supported categories.
 
 ## Contributing
