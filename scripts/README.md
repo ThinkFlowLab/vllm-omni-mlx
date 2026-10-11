@@ -96,3 +96,29 @@ Operational and development scripts.
   ```sh
   python scripts/asr_roundtrip.py --voices vivian ryan
   ```
+
+- `build_asr_eval.py` (#68): builds the local knob-bench eval set from
+  `hf-internal-testing/librispeech_asr_dummy` (LibriSpeech, CC-BY-4.0) —
+  10 real-speech short clips (1–10 s) plus ~60 s / ~150 s concatenations
+  with references, into `~/.cache/vllm-omni-mlx/asr-eval`. Needs
+  `pip install pyarrow`; honors `HF_ENDPOINT`. GPU-free:
+
+  ```sh
+  python scripts/build_asr_eval.py
+  ```
+
+- `bench_asr_knobs.py` (#68): ASR serving-knob bench — checkpoint quant
+  ladder, `prefill_step_size`, `chunk_duration`, `batch_size` — over the
+  eval set above, WER-guarded, medians + peak wired memory per config.
+  `--mode plan` places configs sequentially; `--mode ab` interleaves two
+  configs rep-by-rep and is the only basis for comparative claims
+  (sequential sweeps drifted enough to invert a −4 % "win"). GPU-serial:
+
+  ```sh
+  python scripts/bench_asr_knobs.py --mode plan --clips short --configs \
+    '[{"model":"mlx-community/Qwen3-ASR-1.7B-4bit","prefill":2048}]'
+  python scripts/bench_asr_knobs.py --mode ab --clips short+long --repeats 3 \
+    --tags A-p2048,B-p1024 --configs \
+    '[{"model":"mlx-community/Qwen3-ASR-1.7B-4bit","prefill":2048},
+      {"model":"mlx-community/Qwen3-ASR-1.7B-4bit","prefill":1024}]'
+  ```
