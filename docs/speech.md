@@ -107,3 +107,47 @@ benchmark scripts are `scripts/bench_all_checkpoints.py`,
 `scripts/bench_prefix_cache.py`, `scripts/bench_stream_rtf.py`. Correctness
 gates: HNR floors (harmonics-to-noise, the catastrophic-decode detector) plus
 token-exactness harnesses in `tests/`.
+
+## ASR performance (Qwen3-ASR, M4)
+
+Knob-space evidence for `/v1/audio/transcriptions` (#68; the latency table
+PR #104 listed as not-done). Eval: 10 real-speech clips (1–10 s,
+librispeech_asr_dummy) + built 64 s/158 s concatenations, WER-guarded
+(±0.005 mean). Build the eval set and reproduce with
+`scripts/build_asr_eval.py` + `scripts/bench_asr_knobs.py`; comparative
+claims come from the interleaved `--mode ab` only (sequential sweeps
+drifted enough to invert a −4 % prefill "win" into a +1…3.5 % loss for the
+default across 6/6 pairs).
+
+Served-default ladder (median wall over the 10 short clips, mlx 0.32 /
+mlx-audio 0.5.8, 24 GB M4, GPU-serial):
+
+| checkpoint | wall | mean WER | peak wired |
+|---|---|---|---|
+| Qwen3-ASR-0.6B-4bit | 0.29 s | 0.031 | 1.31 GiB |
+| Qwen3-ASR-0.6B-8bit | 0.41 s | 0.027 | 1.59 GiB |
+| **Qwen3-ASR-1.7B-4bit (served)** | **0.63 s (RTF 0.103)** | **0.020** | **2.29 GiB** |
+| Qwen3-ASR-1.7B-6bit | 0.79 s | 0.011 | 2.69 GiB |
+| Qwen3-ASR-1.7B-8bit | 1.03 s | 0.012 | 3.09 GiB |
+
+Verdicts: the 4-bit default is the latency optimum of the exposed space —
+every heavier quant pays ≥ 26 % wall for ≤ 0.009 WER, `prefill_step_size`
+2048 and monolithic `chunk_duration` are confirmed by interleaved A/B, and
+`prefill_step_size` 8192 genuinely costs +27 % on 158 s audio. Chunking
+(30–120 s) is WER-worse (0.021–0.026 vs 0.016) at flat latency; 30 s chunks
+with `batch_size` 4 are −20 % but 5× WER (0.076) — rejected. The 0.6B-4bit
+is a 2.2× fast-lane option at +0.011 mean WER if a request class ever
+trades accuracy for speed.
+
+Decode-loop anatomy (per token, ~16–21 ms depending on thermal state): the
+one-token model forward is ~100 % of cadence — sampler/logsumexp/Python are
+sub-millisecond. Inside it, the 28 4-bit decoder layers cost ~15 ms (~75 %,
+~0.76 GiB weight reads at ~50 % of the M4's bandwidth floor — the gap a
+compiled decode loop (#68 task 5) would close), the
+`QuantizedEmbedding.as_linear` vocabulary projection costs 5.2 ms
+(~25 %, already at its floor — a bf16 lm_head would read 594 MiB), and KV
+attention adds +4–5 ms at 4k context (448 MiB bf16 cache read, matches spec
+math). TTFT path (once per request): CPU mel ×2 ≤ 90 ms (negligible, despite
+running twice), bf16 audio tower 0.15 s / 1.6 s (short / 158 s) — on-the-fly
+tower 4-bit keeps WER but is slower (compute-bound at long audio) — and
+chunked prefill.
