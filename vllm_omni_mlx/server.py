@@ -393,7 +393,11 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             text = payload.get("input")
             if not isinstance(text, str):
                 raise ApiError(400, "input must be a string")
+            if not text.strip():
+                raise ApiError(400, "input must be a non-empty string")
             fmt = payload.get("response_format", "wav")
+            if fmt not in ("wav", "pcm"):
+                raise ApiError(400, f"response_format must be 'wav' or 'pcm', got '{fmt}'")
             speed = payload.get("speed", 1.0)
             voice = payload.get("voice")
             instructions = payload.get("instructions")
@@ -402,8 +406,6 @@ def create_app(backend: Backend | None = None, api_key: str | None = None, tts_s
             interval = payload.get("streaming_interval")
             initial_interval = payload.get("streaming_initial_interval")
             if stream:
-                if fmt not in ("wav", "pcm"):
-                    raise ApiError(400, f"response_format must be 'wav' or 'pcm', got '{fmt}'")
                 # the service knows its own rate (24 kHz Qwen3-TTS, 48 kHz
                 # VoxCPM2); a RIFF header needs the total length, so
                 # streaming is raw PCM either way — an omitted format

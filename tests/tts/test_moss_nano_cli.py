@@ -21,9 +21,8 @@ MODEL = "local-moss-nano"
 @dataclass(frozen=True)
 class FakeNanoConfig:
     model_ref: str = MODEL
-    max_new_frames: int = 375
+    max_tokens: int = 375
     audio_temperature: float = 0.8
-    seed: int | None = None
 
 
 def wav_payload(sample_rate=48000, frames=12000):
@@ -143,6 +142,12 @@ class MossNanoCliTest(unittest.TestCase):
         self.run_server.assert_not_called()
 
     def test_synthesis_maps_options_and_preserves_service_wav(self):
+        def check_seed_timing(seed):
+            self.load_model.assert_called_once()
+            self.service_factory.assert_called_once()
+            self.service.speech_bytes.assert_not_called()
+
+        self.seed.side_effect = check_seed_timing
         self.assertEqual(
             self.synthesize(
                 "--max-tokens", "42", "--temperature", "0.3", "--seed", "7"
@@ -150,12 +155,9 @@ class MossNanoCliTest(unittest.TestCase):
             0,
         )
         self.load_model.assert_called_once_with(
-            FakeNanoConfig(
-                model_ref=MODEL, max_new_frames=42, audio_temperature=0.3, seed=7
-            )
+            FakeNanoConfig(model_ref=MODEL, max_tokens=42, audio_temperature=0.3)
         )
-        # Nano's worker owns its RNG; the CLI passes the seed through config.
-        self.seed.assert_not_called()
+        self.seed.assert_called_once_with(7)
         call = self.service.speech_bytes.call_args
         self.assertEqual(call.args, ("hello",))
         self.assertEqual(
@@ -180,8 +182,14 @@ class MossNanoCliTest(unittest.TestCase):
         self.load_model.assert_not_called()
         self.assertFalse(self.output.exists())
 
+    def test_zero_seed_is_applied(self):
+        self.assertEqual(self.synthesize("--seed", "0"), 0)
+        self.seed.assert_called_once_with(0)
+
     def test_unsupported_flags_and_invalid_sampling_options_fail_before_loading(self):
         for flag, value in (
+            ("--text", ""),
+            ("--text", "  "),
             ("--voice", "vivian"),
             ("--instruct", "happy"),
             ("--language", "Chinese"),
@@ -214,6 +222,27 @@ class MossNanoCliTest(unittest.TestCase):
         self.assertEqual(self.synthesize(), 1)
         self.assertIn("generated no audio", self.stderr.getvalue())
         self.assertFalse(self.output.exists())
+
+    def test_empty_wav_is_rejected_without_creating_output(self):
+        # The service no longer rejects empty audio; the CLI owns this check.
+        self.service.speech_bytes.return_value = (wav_payload(frames=0), "audio/wav")
+        self.assertEqual(self.synthesize(), 1)
+        self.assertIn("model produced no audio", self.stderr.getvalue())
+        self.assertFalse(self.output.exists())
+
+    def test_model_load_failure_does_not_seed_or_generate(self):
+        self.load_model.side_effect = RuntimeError("model unavailable")
+        self.assertEqual(self.synthesize("--seed", "7"), 1)
+        self.assertIn("model unavailable", self.stderr.getvalue())
+        self.seed.assert_not_called()
+        self.service.speech_bytes.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_output_write_failure_is_reported(self):
+        self.output.mkdir()
+        self.assertEqual(self.synthesize(), 1)
+        self.assertIn("error: MOSS Nano synthesis failed:", self.stderr.getvalue())
+        self.assertTrue(self.output.is_dir())
 
     def test_unreadable_model_config_is_reported_without_loading(self):
         self.peek_config.side_effect = OSError("config unavailable")

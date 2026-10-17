@@ -2,15 +2,24 @@
 
 Operational and development scripts.
 
-- `bench_moss_nano.py`: compare buffered and incremental MOSS Nano synthesis
-  with a cloning reference. Reports first-audio latency, chunk intervals, total
-  time, audio duration, real-time factor and peak MLX memory for cold and warm
-  requests. Requires `[tts]` and the model/codec weights:
+- `bench_moss_nano.py`: buffered/streaming A/B using the same cloning reference,
+  text and seed. Prints each request and a cold/warm summary; saves raw requests,
+  warm min/median/max, configuration, checkpoint revisions, reference SHA256,
+  hardware and dependency versions as JSON. Requires `[tts]` and locally cached
+  `mlx-community/MOSS-TTS-Nano-100M` + `mlx-community/MOSS-Audio-Tokenizer-Nano`:
 
   ```sh
-  python scripts/bench_moss_nano.py --ref-audio reference.wav \
-      --text "你好，这是流式语音测试。" --interval 0.5 --initial-interval 0.08
+  python -m scripts.bench_moss_nano --ref-audio reference.wav \
+      --text "你好，这是流式语音测试。" --seed 7 --runs 3 \
+      --streaming-interval 0.5 --streaming-initial-interval 0.08 \
+      --output moss-ab.json
   ```
+
+  Default `--mode both`; select `streaming` or `buffered` for one path.
+  Cold requests use fresh processes; warm medians exclude cold/warmup runs.
+  Timings include lazy codec loading, reference processing and synthesis,
+  but exclude model loading, input file reads, HTTP and playback.
+  Without `--output`, JSON is saved to a timestamped file in the current directory.
 
 - `latency_probe.py` (#6): TTFT / inter-token latency probe against a running
   server — cold vs cached prefix, per model — so "extreme low latency" has

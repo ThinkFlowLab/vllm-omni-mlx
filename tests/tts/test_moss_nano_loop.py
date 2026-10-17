@@ -1,8 +1,8 @@
 """Weight-free parity and causal decoding tests for the Nano streaming loop."""
 
 import importlib.util
-import threading
 import unittest
+from contextlib import closing
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
@@ -102,7 +102,7 @@ class NanoFrameParityTest(unittest.TestCase):
         self.ref_audio = mx.zeros((4, 2))
         self.ref_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
         self.config = MossNanoConfig(
-            max_new_frames=4,
+            max_tokens=4,
             text_top_k=2,
             audio_top_k=4,
             audio_top_p=0.85,
@@ -141,8 +141,8 @@ class NanoFrameParityTest(unittest.TestCase):
                     text=text,
                     ref_audio=self.ref_audio,
                     mode="voice_clone",
-                    max_tokens=config.max_new_frames,
-                    voice_clone_max_text_tokens=config.max_text_tokens,
+                    max_tokens=config.max_tokens,
+                    voice_clone_max_text_tokens=config.voice_clone_max_text_tokens,
                     do_sample=config.do_sample,
                     text_temperature=config.text_temperature,
                     text_top_p=config.text_top_p,
@@ -156,9 +156,24 @@ class NanoFrameParityTest(unittest.TestCase):
         return captured[0][0]
 
     def _frames(self, text, config, seed):
+        # generate_frames now yields waveforms. Capture the actual code groups
+        # at the decoder boundary without replacing autoregressive generation.
+        captured = []
+
+        def decode(codes):
+            captured.append(codes)
+            return mx.zeros((codes.shape[0] * 2, 2))
+
+        self.model.audio_tokenizer = SimpleNamespace(
+            make_streaming_decoder=lambda **kwargs: SimpleNamespace(
+                decode_frames=decode
+            )
+        )
         mx.random.seed(seed)
-        frames = list(loop.iter_audio_frames(self.model, config, text, self.ref_audio))
-        return mx.stack(frames) if frames else mx.zeros((0, 2), dtype=mx.int32)
+        list(loop.synthesize_clone_stream(self.model, config, text, self.ref_audio))
+        return (
+            mx.concatenate(captured) if captured else mx.zeros((0, 2), dtype=mx.int32)
+        )
 
     def test_greedy_and_seeded_sampling_match_upstream_tokens(self):
         for do_sample in (False, True):
@@ -167,14 +182,14 @@ class NanoFrameParityTest(unittest.TestCase):
                     cfg = replace(self.config, do_sample=do_sample)
                     expected = self._library_tokens("A short phrase.", cfg, seed)
                     actual = self._frames("A short phrase.", cfg, seed)
-                    self.assertEqual(actual.shape, (cfg.max_new_frames, 2))
+                    self.assertEqual(actual.shape, (cfg.max_tokens, 2))
                     self.assertTrue(mx.array_equal(actual, expected).item())
                     self.assertEqual(actual.dtype, mx.int32)
 
     def test_sentence_splitting_resets_lm_cache_and_repetition_history(self):
         from mlx_audio.tts.models.moss_tts_nano import sampling
 
-        cfg = replace(self.config, max_text_tokens=4, max_new_frames=3)
+        cfg = replace(self.config, voice_clone_max_text_tokens=4, max_tokens=3)
         histories = []
         sampler = sampling.sample_next_token
 
@@ -219,10 +234,8 @@ class NanoFrameParityTest(unittest.TestCase):
             "mlx_audio.tts.models.moss_tts_nano.sampling.sample_assistant_text_token",
             side_effect=[mx.array([slot]), mx.array([eos])],
         ) as sample:
-            frames = list(
-                loop.iter_audio_frames(self.model, self.config, "hello", self.ref_audio)
-            )
-        self.assertEqual(len(frames), 1)
+            frames = self._frames("hello", self.config, 7)
+        self.assertEqual(frames.shape, (1, 2))
         self.assertEqual(sample.call_count, 2)
 
     def test_immediate_eos_produces_no_frame(self):
@@ -230,70 +243,63 @@ class NanoFrameParityTest(unittest.TestCase):
             "mlx_audio.tts.models.moss_tts_nano.sampling.sample_assistant_text_token",
             return_value=mx.array([self.model.config.audio_end_token_id]),
         ):
-            self.assertEqual(
-                list(
-                    loop.iter_audio_frames(
-                        self.model, self.config, "hello", self.ref_audio
-                    )
-                ),
-                [],
-            )
+            self.assertEqual(self._frames("hello", self.config, 7).shape, (0, 2))
 
-    def test_cancellation_before_reference_encoding_and_after_one_frame(self):
-        cancel = threading.Event()
-        cancel.set()
-        self.assertEqual(
-            list(
-                loop.iter_audio_frames(
-                    self.model,
-                    self.config,
-                    "hello",
-                    self.ref_audio,
-                    cancel=cancel,
-                )
-            ),
-            [],
+    def test_close_before_iteration_does_not_encode_reference(self):
+        audio = loop.synthesize_clone_stream(
+            self.model, self.config, "hello", self.ref_audio
         )
+        audio.close()
         self.encode_mock.assert_not_called()
-        cancel.clear()
+
+    def test_reference_encoding_uses_model_sample_rate(self):
         with self._force_frames():
-            frames = loop.iter_audio_frames(
-                self.model, self.config, "hello", self.ref_audio, cancel=cancel
-            )
-            self.assertEqual(next(frames).shape, (2,))
-            cancel.set()
-            self.assertEqual(list(frames), [])
-        self.encode_mock.assert_called_once()
+            self._frames("hello", self.config, 7)
+        args, kwargs = self.encode_mock.call_args
+        self.assertIs(args[0], self.ref_audio)
+        self.assertEqual(kwargs, {"sample_rate": self.model.sample_rate})
 
 
 @unittest.skipUnless(HAS_MLX_AUDIO, "Nano codec parity requires the [tts] extra")
 class NanoCodecStreamingTest(unittest.TestCase):
     def setUp(self):
         self.codec = _tiny_codec()
-        self.model = SimpleNamespace(
-            sample_rate=8,
-            audio_tokenizer=self.codec,
-            config=SimpleNamespace(n_vq=2),
-        )
+        self.model = _tiny_model()
+        self.model.audio_tokenizer = self.codec
         self.codes = (mx.arange(22, dtype=mx.int32) % 8).reshape(11, 2)
-        self.config = MossNanoConfig()
 
-    def _stream(self, *, initial, interval, cancel=None, source=None):
-        source = (frame for frame in self.codes) if source is None else source
-        with mock.patch.object(loop, "iter_audio_frames", return_value=source):
-            yield from loop.synthesize_stream(
+    def _stream(self, *, initial=0.08, interval=0.24, segments=None):
+        # Fix sampled codebook tokens to exercise grouping and the real causal
+        # decoder independently of random LM outputs. The tiny codec has a
+        # two-sample hop; intervals still use Nano's fixed 12.5 Hz frame rate.
+        config = MossNanoConfig(
+            max_tokens=11 if segments is None else 3,
+            streaming_initial_interval=initial,
+            streaming_interval=interval,
+        )
+        slot = self.model.config.audio_assistant_slot_token_id
+        with (
+            mock.patch.object(
                 self.model,
-                self.config,
-                "text",
-                mx.zeros((1, 2)),
-                streaming_interval=interval,
-                streaming_initial_interval=initial,
-                cancel=cancel,
+                "encode_reference_audio",
+                return_value=mx.zeros((2, 2), dtype=mx.int32),
+            ),
+            mock.patch(
+                "mlx_audio.tts.models.moss_tts_nano.sampling.sample_assistant_text_token",
+                return_value=mx.array([slot]),
+            ),
+            mock.patch(
+                "mlx_audio.tts.models.moss_tts_nano.sampling.sample_next_token",
+                side_effect=(value.reshape(1) for row in self.codes for value in row),
+            ),
+            mock.patch(
+                "mlx_audio.tts.models.moss_tts_nano.text.split_text_into_best_sentences",
+                return_value=segments or ["Text."],
+            ),
+        ):
+            yield from loop.synthesize_clone_stream(
+                self.model, config, "text", mx.zeros(4)
             )
-
-    def test_hop_comes_from_decoder_and_channel_interleave(self):
-        self.assertEqual(self.codec.downsample_rate, 999)
-        self.assertEqual(loop.validate_streaming_codec(self.model), 2)
 
     def test_real_causal_codec_matches_full_decode_for_multiple_partitions(self):
         expected = self.codec.decode_audio_codes(self.codes)
@@ -309,83 +315,93 @@ class NanoCodecStreamingTest(unittest.TestCase):
                         decoder.decode_frames(self.codes[offset : offset + size])
                     )
                     offset += size
-                actual = mx.concatenate(chunks, axis=0)
+                actual = mx.concatenate(chunks)
                 self.assertEqual(actual.shape, expected.shape)
                 self.assertTrue(
                     mx.allclose(actual, expected, atol=1e-5, rtol=1e-5).item()
                 )
 
     def test_initial_steady_and_final_groups_preserve_all_samples(self):
-        chunks = list(self._stream(initial=0.25, interval=0.75))
+        chunks = list(self._stream())
         self.assertEqual([chunk.shape[0] for chunk in chunks], [2, 6, 6, 6, 2])
         expected = self.codec.decode_audio_codes(self.codes)
         self.assertTrue(
             mx.allclose(mx.concatenate(chunks), expected, atol=1e-5, rtol=1e-5).item()
         )
 
-    def test_initial_interval_is_capped_and_subframe_interval_is_one_frame(self):
-        self.assertEqual(
-            [x.shape[0] for x in self._stream(initial=2, interval=0.75)], [6, 6, 6, 4]
-        )
+    def test_initial_interval_is_independent_and_subframe_interval_is_one_frame(self):
+        self.assertEqual([x.shape[0] for x in self._stream(initial=0.4)], [10, 6, 6])
         self.assertEqual(
             [x.shape[0] for x in self._stream(initial=0.01, interval=0.01)], [2] * 11
         )
 
-    def test_requests_have_independent_codec_state(self):
-        first = mx.concatenate(list(self._stream(initial=0.25, interval=0.75)))
-        second = mx.concatenate(list(self._stream(initial=0.25, interval=0.75)))
-        self.assertTrue(mx.array_equal(first, second).item())
-
-    def test_cancel_drops_pending_group_and_closes_frame_source(self):
-        cancel = threading.Event()
-        closed = []
-
-        def source():
-            try:
-                yield self.codes[0]
-                cancel.set()
-            finally:
-                closed.append(True)
-
+    def test_pending_codes_and_decoder_span_text_segments(self):
         with mock.patch.object(
             self.codec,
             "make_streaming_decoder",
             wraps=self.codec.make_streaming_decoder,
         ) as create:
-            self.assertEqual(
-                list(
-                    self._stream(
-                        initial=0.75, interval=0.75, cancel=cancel, source=source()
+            chunks = list(self._stream(initial=0.32, segments=["One.", "Two."]))
+        self.assertEqual([x.shape[0] for x in chunks], [8, 4])
+        create.assert_called_once_with(num_quantizers=2)
+        expected = self.codec.decode_audio_codes(self.codes[:6])
+        self.assertTrue(
+            mx.allclose(mx.concatenate(chunks), expected, atol=1e-5, rtol=1e-5).item()
+        )
+
+    def test_requests_have_independent_codec_state(self):
+        with mock.patch.object(
+            self.codec,
+            "make_streaming_decoder",
+            wraps=self.codec.make_streaming_decoder,
+        ) as create:
+            first = mx.concatenate(list(self._stream()))
+            second = mx.concatenate(list(self._stream()))
+        self.assertEqual(create.call_count, 2)
+        self.assertTrue(mx.array_equal(first, second).item())
+
+    def test_close_stops_generation_after_delivered_chunk(self):
+        with mock.patch.object(
+            self.model, "_audio_lm_head", wraps=self.model._audio_lm_head
+        ) as head:
+            with closing(self._stream()) as audio:
+                self.assertEqual(next(audio).shape, (2, 2))
+                self.assertEqual(head.call_count, 2)  # One frame, two codebooks.
+            self.assertEqual(list(audio), [])
+            self.assertEqual(head.call_count, 2)
+
+    def test_invalid_frame_counts_fail_before_reference_encoding(self):
+        for kwargs in (
+            {"initial_frames": 0},
+            {"chunk_frames": 0},
+            {"initial_frames": -1},
+        ):
+            with (
+                self.subTest(kwargs=kwargs),
+                mock.patch.object(self.model, "encode_reference_audio") as encode,
+            ):
+                with self.assertRaisesRegex(ValueError, "must be positive"):
+                    list(
+                        loop.generate_frames(
+                            self.model, text="hello", ref_audio=mx.zeros(4), **kwargs
+                        )
                     )
-                ),
-                [],
-            )
-        self.assertEqual(closed, [True])
-        self.assertEqual(create.call_count, 1)
+                encode.assert_not_called()
 
-    def test_closing_audio_generator_closes_frame_source(self):
-        closed = []
 
-        def source():
-            try:
-                yield from self.codes
-            finally:
-                closed.append(True)
-
-        audio = self._stream(initial=0.25, interval=0.75, source=source())
-        next(audio)
-        audio.close()
-        self.assertEqual(closed, [True])
-
-    def test_noncausal_codec_is_rejected_before_generation(self):
-        self.codec.decoder[0].transformer.layers[0].self_attn.causal = False
-        with self.assertRaisesRegex(RuntimeError, "causal"):
-            loop.validate_streaming_codec(self.model)
-
-    def test_missing_codec_api_is_a_configuration_error(self):
-        self.model.audio_tokenizer = SimpleNamespace(sample_rate=8)
-        with self.assertRaisesRegex(RuntimeError, "streaming decode support"):
-            loop.validate_streaming_codec(self.model)
+class NanoIntervalTest(unittest.TestCase):
+    def test_durations_floor_to_whole_80ms_frames_with_minimum_one(self):
+        for seconds, frames in (
+            (0.001, 1),
+            (0.08, 1),
+            (0.159, 1),
+            (0.16, 2),
+            (0.5, 6),
+            (2.0, 25),
+            (10.0, 125),
+        ):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(loop.frames_for_interval(seconds), frames)
 
 
 if __name__ == "__main__":

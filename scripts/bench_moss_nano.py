@@ -1,279 +1,336 @@
-#!/usr/bin/env python3
-"""Compare real MOSS Nano buffered/streaming cold and warm serving latency.
+"""MOSS-Nano buffered/streaming A/B through MossNanoService (no HTTP).
 
-Each mode/text pair starts in a fresh process. "cold" is its first request
-after loading; model load time is reported separately. Warm requests reuse
-the model and service. Peak memory is MLX allocator memory (including weights),
-not total process RSS. Reference decoding is included in request latency.
+python -m scripts.bench_moss_nano --ref-audio reference.wav --output moss-ab.json
 
-    python scripts/bench_moss_nano.py --ref-audio reference.wav --language both
-    python scripts/bench_moss_nano.py --ref-audio reference.wav --text "你好。" --json result.json
-
-Model flags accept cached Hugging Face repositories or explicit local paths.
-Uncached repositories may download; use local paths for an offline benchmark.
+Uses local cached checkpoints only. Each path's cold request runs in a fresh
+process after model loading; it includes lazy codec loading, but does NOT mean
+the OS file cache is cold. Warm measurements alternate A/B order after one
+warmup per path. Every request resets the same seed. Timings include reference
+decoding/encoding, generation and PCM conversion, excluding model loading,
+input file reads, HTTP and playback. Buffered TTFA equals total request time.
 """
-
-from __future__ import annotations
 
 import argparse
 import base64
-import contextlib
 import hashlib
 import json
 import math
+import multiprocessing
+import os
 import platform
 import statistics
 import subprocess
 import sys
 import time
+from contextlib import closing
+from dataclasses import asdict
+from datetime import datetime, timezone
 from importlib.metadata import version
-from itertools import pairwise
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-TEXTS = {
-    "en": "Welcome to this local speech test. Audio should arrive while the model is still speaking.",
-    "zh": "欢迎使用本地语音合成测试。我们希望在完整句子生成之前，就能听到第一段声音。",
-}
+import mlx.core as mx
 
+from vllm_omni_mlx.tts.config import local_snapshot
+from vllm_omni_mlx.tts.moss_nano import (
+    DEFAULT_MODEL,
+    MossNanoConfig,
+    MossNanoService,
+    load_moss_nano_model,
+)
 
-def _parser():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--model", default="mlx-community/MOSS-TTS-Nano-100M")
-    parser.add_argument(
-        "--codec-model", default="mlx-community/MOSS-Audio-Tokenizer-Nano"
-    )
-    parser.add_argument(
-        "--ref-audio", required=True, type=Path, help="0.5–30 s reference recording"
-    )
-    parser.add_argument("--text", help="custom text; overrides --language")
-    parser.add_argument("--language", choices=("en", "zh", "both"), default="both")
-    parser.add_argument("--interval", type=float, default=0.5)
-    parser.add_argument("--initial-interval", type=float, default=0.08)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--max-frames", type=int, default=375, help="audio frame limit per text chunk"
-    )
-    parser.add_argument("--warm-runs", type=int, default=2)
-    parser.add_argument("--greedy", action="store_true", help="disable both samplers")
-    parser.add_argument(
-        "--json", metavar="PATH", help="write JSON; '-' prints only JSON on stdout"
-    )
-    parser.add_argument(
-        "--_worker-mode", choices=("buffered", "stream"), help=argparse.SUPPRESS
-    )
-    return parser
+TEXT = "Hello, this is a short voice cloning test."
+CODEC = "mlx-community/MOSS-Audio-Tokenizer-Nano"
+METRICS = ("ttfa_s", "total_s", "audio_s", "rtf", "first_audio_s", "first_gap_s")
 
 
-def _worker(args):
-    import mlx.core as mx
-
-    from vllm_omni_mlx.tts.moss_nano import (
-        MossNanoConfig,
-        MossNanoService,
-        load_moss_nano_model,
+def bench_once(service, text, voice, mode="streaming", seed=7):
+    """Measure delivered PCM bytes; MLX work must finish before starting."""
+    mx.random.seed(seed)
+    mx.synchronize()
+    started = time.perf_counter()
+    first = first_gap = None
+    chunks = []
+    if mode == "buffered":
+        pcm, _ = service.speech_bytes(text, voice=voice, response_format="pcm")
+        total = time.perf_counter() - started
+        first = total
+        chunks = [pcm] if pcm else []
+    elif mode == "streaming":
+        with closing(service.speech_stream(text, voice=voice)) as stream:
+            for chunk in stream:
+                if not chunk:
+                    continue
+                arrived = time.perf_counter() - started
+                if first is None:
+                    first = arrived
+                elif first_gap is None:
+                    first_gap = arrived - first
+                chunks.append(chunk)
+        total = time.perf_counter() - started
+    else:
+        raise ValueError(f"unknown mode: {mode}")
+    if not chunks:
+        raise RuntimeError(f"MOSS-Nano produced no audio ({mode})")
+    if any(len(chunk) % 2 for chunk in chunks):
+        raise RuntimeError("MOSS-Nano produced unaligned PCM16")
+    pcm = b"".join(chunks)
+    audio_s = len(pcm) / (2 * service.sample_rate)
+    return dict(
+        mode=mode,
+        seed=seed,
+        ttfa_s=first,
+        total_s=total,
+        audio_s=audio_s,
+        rtf=total / audio_s,
+        first_audio_s=len(chunks[0]) / (2 * service.sample_rate),
+        first_gap_s=first_gap,
+        chunks=len(chunks),
+        pcm_bytes=len(pcm),
+        pcm_sha256=hashlib.sha256(pcm).hexdigest(),
     )
 
-    voice = {"ref_audio": base64.b64encode(args.ref_audio.read_bytes()).decode("ascii")}
-    config = MossNanoConfig(
-        model_ref=args.model,
-        codec_model_ref=args.codec_model,
-        max_new_frames=args.max_frames,
-        do_sample=not args.greedy,
-        seed=args.seed,
-    )
+
+def load_service(config, codec_path):
     started = time.perf_counter()
     model = load_moss_nano_model(config)
-    service = MossNanoService(model, config)
-    load_s = time.perf_counter() - started
-    runs = []
+    # Keep the codec lazy so first-request timings include its initialization.
+    model.config.audio_tokenizer_pretrained_name_or_path = codec_path
+    mx.synchronize()
+    return MossNanoService(model, config), time.perf_counter() - started
+
+
+def cold_request(config, codec_path, text, voice, mode, seed):
+    service, load_s = load_service(config, codec_path)
+    result = bench_once(service, text, voice, mode, seed)
+    return dict(model_load_s=load_s, request=dict(result, phase="cold", run=0))
+
+
+def command_output(*args):
     try:
-        for index in range(1 + args.warm_runs):
-            mx.reset_peak_memory()
-            started = time.perf_counter()
-            chunks = []
-            chunk_times = []
-            first_s = None
-            if args._worker_mode == "buffered":
-                pcm, _ = service.speech_bytes(
-                    args.text, voice=voice, response_format="pcm"
-                )
-                first_s = time.perf_counter() - started
-                chunks.append(pcm)
-                chunk_times.append(first_s)
-            else:
-                with contextlib.closing(
-                    service.speech_stream(
-                        args.text,
-                        voice=voice,
-                        streaming_interval=args.interval,
-                        streaming_initial_interval=args.initial_interval,
-                    )
-                ) as stream:
-                    for chunk in stream:
-                        chunk_times.append(time.perf_counter() - started)
-                        if first_s is None:
-                            first_s = chunk_times[-1]
-                        chunks.append(chunk)
-            wall_s = time.perf_counter() - started
-            pcm = b"".join(chunks)
-            if not pcm or len(pcm) % 2:
-                raise RuntimeError("service returned empty or misaligned PCM16")
-            audio_s = len(pcm) / (2 * service.sample_rate)
-            gaps = [right - left for left, right in pairwise(chunk_times)]
-            runs.append(
-                {
-                    "phase": "cold" if index == 0 else "warm",
-                    "run": index,
-                    "ttfa_s": first_s,
-                    "wall_s": wall_s,
-                    "audio_s": audio_s,
-                    "rtf": wall_s / audio_s,
-                    "pcm_bytes": len(pcm),
-                    "chunks": len(chunks),
-                    "first_chunk_audio_s": len(chunks[0]) / (2 * service.sample_rate),
-                    "chunk_arrival_s": chunk_times,
-                    "chunk_gap_max_s": max(gaps) if gaps else None,
-                    "chunk_gap_median_s": statistics.median(gaps) if gaps else None,
-                    "peak_memory_bytes": mx.get_peak_memory(),
-                    "pcm_sha256": hashlib.sha256(pcm).hexdigest(),
-                }
+        return subprocess.check_output(
+            args, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def checkpoint_info(path):
+    root = Path(path)
+    return dict(
+        path=str(root),
+        revision=root.name if root.parent.name == "snapshots" else None,
+        config_sha256=hashlib.sha256((root / "config.json").read_bytes()).hexdigest(),
+    )
+
+
+def summarize(rows, modes):
+    summary = {}
+    for mode in modes:
+        warm = [row for row in rows if row["mode"] == mode and row["phase"] == "warm"]
+        summary[mode] = {"requests": len(warm)}
+        for key in METRICS:
+            values = [row[key] for row in warm if row[key] is not None]
+            summary[mode][key] = (
+                dict(median=statistics.median(values), min=min(values), max=max(values))
+                if values
+                else None
             )
-    finally:
-        service._pool.shutdown(wait=True, cancel_futures=True)
-    return {
-        "mode": args._worker_mode,
-        "load_s": load_s,
-        "repeated_pcm_identical": len({run["pcm_sha256"] for run in runs}) == 1,
-        "runs": runs,
-    }
+    return summary
 
 
-def main(argv=None):
-    parser = _parser()
-    args = parser.parse_args(argv)
+def print_row(label, row):
+    gap = "-" if row["first_gap_s"] is None else f"{row['first_gap_s']:.3f}"
+    print(
+        f"{row['mode']:>9} {label:>12} {row['ttfa_s']:9.3f} {row['total_s']:9.3f} "
+        f"{row['audio_s']:9.3f} {row['rtf']:8.3f} {row['first_audio_s']:10.3f} {gap:>10}",
+        flush=True,
+    )
+
+
+def main():
+    defaults = MossNanoConfig()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ref-audio", type=Path, required=True)
+    parser.add_argument("--text", default=TEXT)
+    parser.add_argument(
+        "--mode", choices=("both", "buffered", "streaming"), default="both"
+    )
+    parser.add_argument(
+        "--runs", type=int, default=3, help="Warm measured requests per path"
+    )
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--cooldown", type=float, default=1.0, help="Seconds between requests"
+    )
+    parser.add_argument(
+        "--output", type=Path, help="Raw JSON (default: timestamped file in cwd)"
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=defaults.max_tokens,
+        help="Maximum audio frames per text segment",
+    )
+    parser.add_argument("--greedy", action="store_true")
+    parser.add_argument(
+        "--streaming-initial-interval",
+        type=float,
+        default=defaults.streaming_initial_interval,
+    )
+    parser.add_argument(
+        "--streaming-interval", type=float, default=defaults.streaming_interval
+    )
+    args = parser.parse_args()
     if not args.ref_audio.is_file():
         parser.error("--ref-audio must point to an existing recording")
-    if args.max_frames < 1 or args.warm_runs < 1:
-        parser.error("--max-frames and --warm-runs must be positive")
-    if args.text is not None and not args.text.strip():
+    if args.output and args.output.resolve() == args.ref_audio.resolve():
+        parser.error("--output must not overwrite --ref-audio")
+    if args.runs < 1 or args.max_tokens < 1:
+        parser.error("--runs and --max-tokens must be positive")
+    if not args.text.strip():
         parser.error("--text must not be empty")
-    for flag, value in (
-        ("--interval", args.interval),
-        ("--initial-interval", args.initial_interval),
-    ):
-        if not math.isfinite(value) or not 0 < value <= 10:
-            parser.error(f"{flag} must be in (0, 10]")
-    if args._worker_mode:
-        # Model loaders sometimes print progress to stdout; keep the child
-        # protocol machine-readable and forward those messages to stderr.
-        with contextlib.redirect_stdout(sys.stderr):
-            result = _worker(args)
-        print(json.dumps(result, allow_nan=False))
-        return 0
+    if not 0 <= args.seed < 2**32:
+        parser.error("--seed must be in [0, 2**32)")
+    if not math.isfinite(args.cooldown) or args.cooldown < 0:
+        parser.error("--cooldown must be finite and non-negative")
+    for name in ("streaming_initial_interval", "streaming_interval"):
+        if not 0.0 < getattr(args, name) <= 10.0:
+            parser.error(f"--{name.replace('_', '-')} must be in (0, 10] seconds")
+    model_path, codec_path = local_snapshot(DEFAULT_MODEL), local_snapshot(CODEC)
+    if model_path is None or codec_path is None:
+        parser.error(f"Cache {DEFAULT_MODEL} and {CODEC} locally before benchmarking")
 
-    cases = (
-        {"custom": args.text}
-        if args.text is not None
-        else (
-            TEXTS if args.language == "both" else {args.language: TEXTS[args.language]}
-        )
+    reference = args.ref_audio.read_bytes()
+    voice = {"ref_audio": base64.b64encode(reference).decode("ascii")}
+    config = MossNanoConfig(
+        model_ref=model_path,
+        max_tokens=args.max_tokens,
+        do_sample=not args.greedy,
+        streaming_initial_interval=args.streaming_initial_interval,
+        streaming_interval=args.streaming_interval,
     )
-    report = {
-        "environment": {
-            "python": platform.python_version(),
-            "platform": platform.platform(),
-            "architecture": platform.machine(),
-            "mlx": version("mlx"),
-            "mlx_audio": version("mlx-audio"),
-        },
-        "model": args.model,
-        "codec_model": args.codec_model,
-        "reference": str(args.ref_audio.resolve()),
-        "seed": args.seed,
-        "seed_scope": "MossNanoConfig.seed resets the generation worker for each request",
-        "do_sample": not args.greedy,
-        "max_frames_per_text_chunk": args.max_frames,
-        "interval_s": args.interval,
-        "initial_interval_s": args.initial_interval,
-        "cold_definition": "first request in a fresh process after model load",
-        "memory_definition": "peak MLX allocator bytes, including resident weights",
-        "cases": [],
-    }
-    for language, text in cases.items():
-        case = {"language": language, "text": text, "modes": []}
-        for mode in ("buffered", "stream"):
-            print(
-                f"Running {language}/{mode} (cold + {args.warm_runs} warm)...",
-                file=sys.stderr,
-                flush=True,
+    modes = ["buffered", "streaming"] if args.mode == "both" else [args.mode]
+    stamp = datetime.now(timezone.utc)
+    output = args.output or Path(f"moss-ab-{stamp.strftime('%Y%m%dT%H%M%S%fZ')}.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    report = dict(
+        schema_version=1,
+        created_utc=stamp.isoformat(),
+        status="running",
+        command=[sys.executable, "-m", "scripts.bench_moss_nano", *sys.argv[1:]],
+        environment=dict(
+            platform=platform.platform(),
+            machine=platform.machine(),
+            cpu=command_output("sysctl", "-n", "machdep.cpu.brand_string"),
+            memory_bytes=command_output("sysctl", "-n", "hw.memsize"),
+            python=platform.python_version(),
+            packages={
+                name: version(name)
+                for name in ("mlx", "mlx-audio", "numpy", "huggingface-hub")
+            },
+            git_commit=command_output("git", "rev-parse", "HEAD"),
+            git_status=command_output("git", "status", "--short"),
+            script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        ),
+        model=checkpoint_info(model_path),
+        codec=checkpoint_info(codec_path),
+        reference=dict(
+            path=str(args.ref_audio.resolve()),
+            bytes=len(reference),
+            sha256=hashlib.sha256(reference).hexdigest(),
+        ),
+        text=args.text,
+        seed=args.seed,
+        config=asdict(config),
+        sample_rate=48000,
+        modes=modes,
+        runs=args.runs,
+        cooldown_s=args.cooldown,
+        timing_scope=__doc__,
+        loads=[],
+        requests=[],
+    )
+
+    def save():
+        output.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        )
+
+    def record(row):
+        report["requests"].append(row)
+        save()
+        label = f"warm {row['run']}" if row["phase"] == "warm" else row["phase"]
+        print_row(label, row)
+
+    save()  # Fail on unwritable output before loading weights.
+    print(
+        f"Text: {args.text!r}; seed: {args.seed}; JSON: {output.resolve()}", flush=True
+    )
+    print(
+        f"{'mode':>9} {'request':>12} {'TTFA s':>9} {'total s':>9} {'audio s':>9} "
+        f"{'RTF':>8} {'first s':>10} {'gap s':>10}",
+        flush=True,
+    )
+    # One task per spawned child: each path gets its own process-cold request.
+    with multiprocessing.get_context("spawn").Pool(1, maxtasksperchild=1) as pool:
+        for mode in modes:
+            time.sleep(args.cooldown)
+            result = pool.apply(
+                cold_request, (config, codec_path, args.text, voice, mode, args.seed)
             )
-            command = [
-                sys.executable,
-                "-B",
-                str(Path(__file__).resolve()),
-                "--_worker-mode",
-                mode,
-                "--model",
-                args.model,
-                "--codec-model",
-                args.codec_model,
-                "--ref-audio",
-                str(args.ref_audio.resolve()),
-                "--text",
-                text,
-                "--interval",
-                str(args.interval),
-                "--initial-interval",
-                str(args.initial_interval),
-                "--seed",
-                str(args.seed),
-                "--max-frames",
-                str(args.max_frames),
-                "--warm-runs",
-                str(args.warm_runs),
-            ]
-            if args.greedy:
-                command.append("--greedy")
-            completed = subprocess.run(
-                command, capture_output=True, text=True, check=False
+            report["loads"].append(
+                dict(mode=mode, phase="cold", seconds=result["model_load_s"])
             )
-            if completed.stderr:
-                print(completed.stderr, end="", file=sys.stderr)
-            if completed.returncode:
-                raise RuntimeError(
-                    f"{language}/{mode} benchmark failed (exit {completed.returncode})"
+            record(result["request"])
+
+    service, load_s = load_service(config, codec_path)
+    report["loads"].append(dict(phase="warm_session", seconds=load_s))
+    for mode in modes:
+        time.sleep(args.cooldown)
+        record(
+            dict(
+                bench_once(service, args.text, voice, mode, args.seed),
+                phase="warmup",
+                run=0,
+            )
+        )
+    for run in range(1, args.runs + 1):
+        for mode in modes if run % 2 else modes[::-1]:
+            time.sleep(args.cooldown)
+            record(
+                dict(
+                    bench_once(service, args.text, voice, mode, args.seed),
+                    phase="warm",
+                    run=run,
                 )
-            outcome = json.loads(completed.stdout)
-            case["modes"].append(outcome)
-            for run in outcome["runs"]:
-                print(
-                    f"  {run['phase']} {mode}: TTFA {run['ttfa_s']:.3f}s, "
-                    f"RTF {run['rtf']:.3f}, audio {run['audio_s']:.2f}s, "
-                    f"{run['pcm_bytes']} bytes, peak {run['peak_memory_bytes'] / 2**30:.2f} GiB",
-                    file=sys.stderr,
-                )
-        buffered, streamed = [mode["runs"] for mode in case["modes"]]
-        case["comparisons"] = [
-            {
-                "run": b["run"],
-                "phase": b["phase"],
-                "ttfa_speedup": b["ttfa_s"] / s["ttfa_s"],
-                "equal_pcm_length": b["pcm_bytes"] == s["pcm_bytes"],
-                "identical_pcm": b["pcm_sha256"] == s["pcm_sha256"],
-            }
-            for b, s in zip(buffered, streamed)
-        ]
-        report["cases"].append(case)
-    payload = json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
-    if args.json == "-":
-        print(payload, end="")
-    elif args.json:
-        Path(args.json).write_text(payload)
-        print(f"JSON written to {args.json}", file=sys.stderr)
+            )
+    report["summary"] = summarize(report["requests"], modes)
+    report["status"] = "complete"
+    save()
+    print(
+        "\nA/B summary: cold = fresh-process first request; warm = median (excluding warmup)"
+    )
+    for mode in modes:
+        cold = next(
+            row
+            for row in report["requests"]
+            if row["mode"] == mode and row["phase"] == "cold"
+        )
+        print_row("cold", cold)
+        summary = report["summary"][mode]
+        print_row(
+            f"warm n={args.runs}",
+            dict(
+                mode=mode,
+                **{
+                    key: summary[key]["median"] if summary[key] is not None else None
+                    for key in METRICS
+                },
+            ),
+        )
+    print(f"Raw requests, warm min/median/max and environment: {output.resolve()}")
     return 0
 
 

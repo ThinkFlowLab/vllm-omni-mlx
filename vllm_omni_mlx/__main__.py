@@ -202,7 +202,7 @@ def _load_tts(model_ref: str):
     prewarm the compiled streaming shapes, wrap. VoxCPM2 (#71): eager load
     of the mlx-audio model — nothing to prewarm (its generate is
     single-yield; compiled/incremental decode is follow-up loop work).
-    MOSS Nano (#73): load the model and codec, then wrap its cloning service."""
+    MOSS Nano (#73): load through mlx-audio, then wrap its cloning service."""
     import time
 
     from .backends import _peek_config
@@ -314,6 +314,9 @@ def _tts_synthesize_moss_nano(args) -> int:
     if args.voice is not None:
         print("error: MOSS Nano has no preset voices; use --ref-audio without --voice", file=sys.stderr)
         return 1
+    if not args.text.strip():
+        print("error: --text must be non-empty", file=sys.stderr)
+        return 1
     if args.instruct:
         print("error: --instruct is not supported on MOSS Nano", file=sys.stderr)
         return 1
@@ -327,21 +330,23 @@ def _tts_synthesize_moss_nano(args) -> int:
         overrides = {}
         if args.max_tokens is not None:
             try:
-                overrides["max_new_frames"] = int(args.max_tokens)
+                overrides["max_tokens"] = int(args.max_tokens)
             except ValueError:
                 raise ValueError("--max-tokens must be a positive integer for MOSS Nano") from None
-            if overrides["max_new_frames"] < 1:
+            if overrides["max_tokens"] < 1:
                 raise ValueError("--max-tokens must be a positive integer for MOSS Nano")
         if args.temperature is not None:
             if not math.isfinite(args.temperature) or args.temperature <= 0:
                 raise ValueError("--temperature must be finite and positive for MOSS Nano")
             overrides["audio_temperature"] = args.temperature
-        if args.seed is not None:
-            overrides["seed"] = args.seed
         config = MossNanoConfig(model_ref=args.model, **overrides)
         with open(args.ref_audio, "rb") as f:
             voice = {"ref_audio": base64.b64encode(f.read()).decode("ascii")}
         service = MossNanoService(load_moss_nano_model(config), config)
+        if args.seed is not None:
+            import mlx.core as mx
+
+            mx.random.seed(args.seed)
         start = time.perf_counter()
         data, _ = service.speech_bytes(args.text, voice=voice, response_format="wav")
         elapsed = time.perf_counter() - start

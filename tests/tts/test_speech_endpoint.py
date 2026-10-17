@@ -107,6 +107,18 @@ class AudioRoutesTest(unittest.TestCase):
         self.assertEqual(ok.status_code, 200)
         self.assertEqual(ok.json(), {"object": "list", "voices": ["vivian", "ryan"]})
 
+    def test_invalid_input_and_format_are_rejected_before_service_call(self):
+        service = mock.Mock()
+        client = TestClient(create_app(tts_service=service))
+        for stream in (False, True):
+            for invalid in ({"input": ""}, {"input": "  "}, {"response_format": "mp3"}):
+                body = {"input": "hello", "stream": stream, **invalid}
+                with self.subTest(body=body):
+                    response = client.post("/v1/audio/speech", json=body)
+                    self.assertEqual(response.status_code, 400)
+        service.speech_bytes.assert_not_called()
+        service.speech_stream.assert_not_called()
+
     def test_models_list_includes_tts_without_backend(self):
         data = self.client.get("/v1/models").json()
         self.assertEqual([m["id"] for m in data["data"]], ["fake-tts"])
@@ -314,43 +326,53 @@ class AudioStreamLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.source.cancelled.is_set())
         await self._wait_thread_event(self.source.closed)
 
-    async def test_nano_first_chunk_and_disconnect_reach_generation_worker(self):
+    async def test_nano_disconnect_closes_generator_at_next_chunk(self):
         import mlx.core as mx
 
-        from vllm_omni_mlx.tts import moss_nano
+        from vllm_omni_mlx.tts import moss_nano, moss_nano_loop
 
         model = SimpleNamespace(
             sample_rate=48000, config=SimpleNamespace(model_type="moss_tts_nano")
         )
         service = moss_nano.MossNanoService(model)
-        self.addCleanup(service._pool.shutdown)
+        started = threading.Event()
+        release = threading.Event()
         finished = threading.Event()
+        self.addCleanup(release.set)
 
-        def synthesize(*args, cancel, **kwargs):
+        def synthesize(*args, **kwargs):
             try:
                 yield mx.array([0.5, -0.5])
-                if not cancel.wait(5):
-                    raise RuntimeError("HTTP disconnect did not cancel Nano generation")
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError("test did not release synthesis")
+                yield mx.array([0.25, -0.25])
             finally:
                 finished.set()
 
         with (
             mock.patch.object(moss_nano, "decode_ref_audio", return_value=mx.zeros(24000)),
-            mock.patch.object(moss_nano, "validate_streaming_codec"),
-            mock.patch.object(moss_nano, "synthesize_stream", side_effect=synthesize),
+            mock.patch.object(moss_nano_loop, "synthesize_clone_stream", side_effect=synthesize),
         ):
             task = self._start(service=service, payload={
                 "input": "hello", "stream": True, "voice": {"ref_audio": "fixture"},
             })
             await asyncio.wait_for(self.first_chunk.wait(), 2)
+            await self._wait_thread_event(started)
             self.assertFalse(finished.is_set())
             bodies = [m["body"] for m in self.messages if m["type"] == "http.response.body"]
-            self.assertEqual(bodies, [b"\x00\x40\x00\xc0"])
+            self.assertEqual(bodies, [b"\xff\x3f\x01\xc0"])
+            self.assertEqual(dict(self.messages[0]["headers"])[b"x-audio-sample-rate"], b"48000")
             self.assertFalse(service._lock.acquire(blocking=False))
             self.incoming.put_nowait({"type": "http.disconnect"})
             await asyncio.wait_for(task, 2)
+            self.assertFalse(finished.is_set())
+            release.set()
             await self._wait_thread_event(finished)
-            await asyncio.to_thread(service._pool.shutdown)
+            # Closing the inner generator happens just before the service releases its lock.
+            acquired = await asyncio.to_thread(service._lock.acquire, True, 2)
+            self.assertTrue(acquired)
+            service._lock.release()
         self.assertTrue(service._lock.acquire(blocking=False))
         service._lock.release()
 
